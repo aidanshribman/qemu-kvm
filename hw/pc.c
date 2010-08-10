@@ -871,7 +871,7 @@ static void load_linux(void *fw_cfg,
     	initrd_max = max_ram_size-ACPI_DATA_SIZE-1;
 
     /* kernel command line */
-    rom_add_blob_fixed("linux-cmdline", kernel_cmdline,
+    rom_add_blob_fixed("cmdline", kernel_cmdline,
                        strlen(kernel_cmdline)+1, cmdline_addr);
 
     if (protocol >= 0x202) {
@@ -1185,7 +1185,7 @@ static void pc_init1(ram_addr_t ram_size,
 
     cpu_irq = qemu_allocate_irqs(pic_irq_request, NULL, 1);
 #ifdef KVM_CAP_IRQCHIP
-    if (kvm_enabled() && qemu_kvm_irqchip_in_kernel()) {
+    if (kvm_enabled() && kvm_irqchip_in_kernel()) {
         isa_irq_state = qemu_mallocz(sizeof(*isa_irq_state));
         isa_irq = i8259 = kvm_i8259_init(cpu_irq[0]);
     } else
@@ -1321,7 +1321,7 @@ static void pc_init1(ram_addr_t ram_size,
             eeprom = qdev_create((BusState *)smbus, "smbus-eeprom");
             qdev_prop_set_uint8(eeprom, "address", 0x50 + i);
             qdev_prop_set_ptr(eeprom, "data", eeprom_buf + (i * 256));
-            qdev_init(eeprom);
+            qdev_init_nofail(eeprom);
         }
         piix4_acpi_system_hot_add_init(pci_bus, cpu_model);
     }
@@ -1364,9 +1364,6 @@ static void pc_init1(ram_addr_t ram_size,
 #ifdef CONFIG_KVM_DEVICE_ASSIGNMENT
     if (kvm_enabled()) {
         add_assigned_devices(pci_bus, assigned_devices, assigned_devices_index);
-#ifdef FIXME /* pci_option_rom_offset */
-        assigned_dev_load_option_roms(pci_option_rom_offset);
-#endif
     }
 #endif /* CONFIG_KVM_DEVICE_ASSIGNMENT */
 }

@@ -97,11 +97,10 @@ int kvm_abi = EXPECTED_KVM_API_VERSION;
 int kvm_page_size;
 
 #ifdef KVM_CAP_SET_GUEST_DEBUG
-static int kvm_debug(void *opaque, void *data,
+static int kvm_debug(CPUState *env,
                      struct kvm_debug_exit_arch *arch_info)
 {
     int handle = kvm_arch_debug(arch_info);
-    CPUState *env = data;
 
     if (handle) {
         kvm_debug_cpu_requested = env;
@@ -110,18 +109,6 @@ static int kvm_debug(void *opaque, void *data,
     return handle;
 }
 #endif
-
-int kvm_mmio_read(void *opaque, uint64_t addr, uint8_t *data, int len)
-{
-    cpu_physical_memory_rw(addr, data, len, 0);
-    return 0;
-}
-
-int kvm_mmio_write(void *opaque, uint64_t addr, uint8_t *data, int len)
-{
-    cpu_physical_memory_rw(addr, data, len, 1);
-    return 0;
-}
 
 static int handle_unhandled(uint64_t reason)
 {
@@ -454,10 +441,6 @@ kvm_vcpu_context_t kvm_create_vcpu(CPUState *env, int id)
     long mmap_size;
     int r;
     kvm_vcpu_context_t vcpu_ctx = qemu_malloc(sizeof(struct kvm_vcpu_context));
-    kvm_context_t kvm = kvm_context;
-
-    vcpu_ctx->kvm = kvm;
-    vcpu_ctx->id = id;
 
     r = kvm_vm_ioctl(kvm_state, KVM_CREATE_VCPU, id);
     if (r < 0) {
@@ -474,13 +457,14 @@ kvm_vcpu_context_t kvm_create_vcpu(CPUState *env, int id)
         fprintf(stderr, "get vcpu mmap size: %m\n");
         goto err_fd;
     }
-    vcpu_ctx->run =
+    env->kvm_run =
         mmap(NULL, mmap_size, PROT_READ | PROT_WRITE, MAP_SHARED, vcpu_ctx->fd,
              0);
-    if (vcpu_ctx->run == MAP_FAILED) {
+    if (env->kvm_run == MAP_FAILED) {
         fprintf(stderr, "mmap vcpu area: %m\n");
         goto err_fd;
     }
+
     return vcpu_ctx;
   err_fd:
     close(vcpu_ctx->fd);
@@ -558,6 +542,7 @@ void kvm_create_irqchip(kvm_context_t kvm)
         }
     }
 #endif
+    kvm_state->irqchip_in_kernel = kvm->irqchip_in_kernel;
 }
 
 int kvm_create(kvm_context_t kvm, unsigned long phys_mem_bytes, void **vm_mem)
@@ -771,9 +756,9 @@ int kvm_set_irqchip(kvm_context_t kvm, struct kvm_irqchip *chip)
 
 #endif
 
-static int handle_io(kvm_vcpu_context_t vcpu)
+static int handle_io(CPUState *env)
 {
-    struct kvm_run *run = vcpu->run;
+    struct kvm_run *run = env->kvm_run;
     uint16_t addr = run->io.port;
     int i;
     void *p = (void *) run + run->io.data_offset;
@@ -823,13 +808,12 @@ static int handle_io(kvm_vcpu_context_t vcpu)
     return 0;
 }
 
-int handle_debug(kvm_vcpu_context_t vcpu, void *env)
+static int handle_debug(CPUState *env)
 {
 #ifdef KVM_CAP_SET_GUEST_DEBUG
-    struct kvm_run *run = vcpu->run;
-    kvm_context_t kvm = vcpu->kvm;
+    struct kvm_run *run = env->kvm_run;
 
-    return kvm_debug(kvm->opaque, env, &run->debug.arch);
+    return kvm_debug(env, &run->debug.arch);
 #else
     return 0;
 #endif
@@ -887,31 +871,23 @@ int kvm_set_mpstate(kvm_vcpu_context_t vcpu, struct kvm_mp_state *mp_state)
 }
 #endif
 
-static int handle_mmio(kvm_vcpu_context_t vcpu)
+static int handle_mmio(CPUState *env)
 {
-    unsigned long addr = vcpu->run->mmio.phys_addr;
-    kvm_context_t kvm = vcpu->kvm;
-    struct kvm_run *kvm_run = vcpu->run;
+    unsigned long addr = env->kvm_run->mmio.phys_addr;
+    struct kvm_run *kvm_run = env->kvm_run;
     void *data = kvm_run->mmio.data;
 
     /* hack: Red Hat 7.1 generates these weird accesses. */
     if ((addr > 0xa0000 - 4 && addr <= 0xa0000) && kvm_run->mmio.len == 3)
         return 0;
 
-    if (kvm_run->mmio.is_write)
-        return kvm_mmio_write(kvm->opaque, addr, data, kvm_run->mmio.len);
-    else
-        return kvm_mmio_read(kvm->opaque, addr, data, kvm_run->mmio.len);
+    cpu_physical_memory_rw(addr, data, kvm_run->mmio.len, kvm_run->mmio.is_write);
+    return 0;
 }
 
 int handle_io_window(kvm_context_t kvm)
 {
     return 1;
-}
-
-int handle_halt(kvm_vcpu_context_t vcpu)
-{
-    return kvm_arch_halt(vcpu->kvm->opaque, vcpu);
 }
 
 int handle_shutdown(kvm_context_t kvm, CPUState *env)
@@ -944,23 +920,23 @@ int pre_kvm_run(kvm_context_t kvm, CPUState *env)
     return 0;
 }
 
-int kvm_get_interrupt_flag(kvm_vcpu_context_t vcpu)
+int kvm_get_interrupt_flag(CPUState *env)
 {
-    return vcpu->run->if_flag;
+    return env->kvm_run->if_flag;
 }
 
-int kvm_is_ready_for_interrupt_injection(kvm_vcpu_context_t vcpu)
+int kvm_is_ready_for_interrupt_injection(CPUState *env)
 {
-    return vcpu->run->ready_for_interrupt_injection;
+    return env->kvm_run->ready_for_interrupt_injection;
 }
 
 int kvm_run(kvm_vcpu_context_t vcpu, void *env)
 {
     int r;
     int fd = vcpu->fd;
-    struct kvm_run *run = vcpu->run;
-    kvm_context_t kvm = vcpu->kvm;
     CPUState *_env = env;
+    kvm_context_t kvm = &_env->kvm_state->kvm_context;
+    struct kvm_run *run = _env->kvm_run;
 
   again:
     push_nmi(kvm);
@@ -993,10 +969,9 @@ int kvm_run(kvm_vcpu_context_t vcpu, void *env)
         struct kvm_coalesced_mmio_ring *ring =
             (void *) run + kvm_state->coalesced_mmio * PAGE_SIZE;
         while (ring->first != ring->last) {
-            kvm_mmio_write(kvm->opaque,
-                           ring->coalesced_mmio[ring->first].phys_addr,
+            cpu_physical_memory_rw(ring->coalesced_mmio[ring->first].phys_addr,
                            &ring->coalesced_mmio[ring->first].data[0],
-                           ring->coalesced_mmio[ring->first].len);
+                           ring->coalesced_mmio[ring->first].len, 1);
             smp_wmb();
             ring->first = (ring->first + 1) % KVM_COALESCED_MMIO_MAX;
         }
@@ -1025,16 +1000,16 @@ int kvm_run(kvm_vcpu_context_t vcpu, void *env)
             abort();
             break;
         case KVM_EXIT_IO:
-            r = handle_io(vcpu);
+            r = handle_io(env);
             break;
         case KVM_EXIT_DEBUG:
-            r = handle_debug(vcpu, env);
+            r = handle_debug(env);
             break;
         case KVM_EXIT_MMIO:
-            r = handle_mmio(vcpu);
+            r = handle_mmio(env);
             break;
         case KVM_EXIT_HLT:
-            r = handle_halt(vcpu);
+            r = kvm_arch_halt(vcpu);
             break;
         case KVM_EXIT_IRQ_WINDOW_OPEN:
             break;
@@ -1058,7 +1033,7 @@ int kvm_run(kvm_vcpu_context_t vcpu, void *env)
 	    abort();
 	    break;
         default:
-            if (kvm_arch_run(vcpu)) {
+            if (kvm_arch_run(env)) {
                 fprintf(stderr, "unhandled vm exit: 0x%x\n", run->exit_reason);
                 kvm_show_regs(vcpu);
                 abort();
@@ -1107,11 +1082,6 @@ int kvm_set_signal_mask(kvm_vcpu_context_t vcpu, const sigset_t *sigset)
         r = -errno;
     free(sigmask);
     return r;
-}
-
-int kvm_irqchip_in_kernel(kvm_context_t kvm)
-{
-    return kvm->irqchip_in_kernel;
 }
 
 int kvm_pit_in_kernel(kvm_context_t kvm)
@@ -1609,11 +1579,6 @@ static void on_vcpu(CPUState *env, void (*func)(void *data), void *data)
 void kvm_arch_get_registers(CPUState *env)
 {
 	kvm_arch_save_regs(env);
-	kvm_arch_save_mpstate(env);
-#ifdef KVM_CAP_MP_STATE
-	if (kvm_irqchip_in_kernel(kvm_context))
-		env->halted = (env->mp_state == KVM_MP_STATE_HALTED);
-#endif
 }
 
 static void do_kvm_cpu_synchronize_state(void *_env)
@@ -1707,6 +1672,10 @@ static void kvm_do_save_mpstate(void *_env)
     CPUState *env = _env;
 
     kvm_arch_save_mpstate(env);
+#ifdef KVM_CAP_MP_STATE
+    if (kvm_irqchip_in_kernel())
+        env->halted = (env->mp_state == KVM_MP_STATE_HALTED);
+#endif
 }
 
 void kvm_save_mpstate(CPUState *env)
@@ -1954,21 +1923,9 @@ static void process_irqchip_events(CPUState *env)
 
 static int kvm_main_loop_cpu(CPUState *env)
 {
-    setup_kernel_sigmask(env);
-
-    pthread_mutex_lock(&qemu_mutex);
-
-    kvm_arch_init_vcpu(env);
-#ifdef TARGET_I386
-    kvm_tpr_vcpu_start(env);
-#endif
-
-    cpu_single_env = env;
-    kvm_arch_load_regs(env);
-
     while (1) {
         int run_cpu = !is_cpu_stopped(env);
-        if (run_cpu && !kvm_irqchip_in_kernel(kvm_context)) {
+        if (run_cpu && !kvm_irqchip_in_kernel()) {
             process_irqchip_events(env);
             run_cpu = !env->halted;
         }
@@ -2003,15 +1960,28 @@ static void *ap_main_loop(void *_env)
         on_vcpu(env, kvm_arch_do_ioperm, data);
 #endif
 
-    /* signal VCPU creation */
+    setup_kernel_sigmask(env);
+
     pthread_mutex_lock(&qemu_mutex);
+    cpu_single_env = env;
+
+    kvm_arch_init_vcpu(env);
+#ifdef TARGET_I386
+    kvm_tpr_vcpu_start(env);
+#endif
+
+    kvm_arch_load_regs(env);
+
+    /* signal VCPU creation */
     current_env->created = 1;
     pthread_cond_signal(&qemu_vcpu_cond);
 
     /* and wait for machine initialization */
     while (!qemu_system_ready)
         qemu_cond_wait(&qemu_system_cond);
-    pthread_mutex_unlock(&qemu_mutex);
+
+    /* re-initialize cpu_single_env after re-acquiring qemu_mutex */
+    cpu_single_env = env;
 
     kvm_main_loop_cpu(env);
     return NULL;
@@ -2594,6 +2564,18 @@ void kvm_mutex_lock(void)
 {
     pthread_mutex_lock(&qemu_mutex);
     cpu_single_env = NULL;
+}
+
+void qemu_mutex_unlock_iothread(void)
+{
+    if (kvm_enabled())
+        kvm_mutex_unlock();
+}
+
+void qemu_mutex_lock_iothread(void)
+{
+    if (kvm_enabled())
+        kvm_mutex_lock();
 }
 
 #ifdef CONFIG_KVM_DEVICE_ASSIGNMENT

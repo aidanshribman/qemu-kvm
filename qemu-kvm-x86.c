@@ -162,10 +162,10 @@ int kvm_arch_create(kvm_context_t kvm, unsigned long phys_mem_bytes,
 
 #ifdef KVM_EXIT_TPR_ACCESS
 
-static int kvm_handle_tpr_access(kvm_vcpu_context_t vcpu)
+static int kvm_handle_tpr_access(CPUState *env)
 {
-	struct kvm_run *run = vcpu->run;
-	kvm_tpr_access_report(cpu_single_env,
+	struct kvm_run *run = env->kvm_run;
+	kvm_tpr_access_report(env,
                          run->tpr_access.rip,
                          run->tpr_access.is_write);
     return 0;
@@ -190,10 +190,10 @@ int kvm_enable_vapic(kvm_vcpu_context_t vcpu, uint64_t vapic)
 
 #endif
 
-int kvm_arch_run(kvm_vcpu_context_t vcpu)
+int kvm_arch_run(CPUState *env)
 {
 	int r = 0;
-	struct kvm_run *run = vcpu->run;
+	struct kvm_run *run = env->kvm_run;
 
 
 	switch (run->exit_reason) {
@@ -203,7 +203,7 @@ int kvm_arch_run(kvm_vcpu_context_t vcpu)
 #endif
 #ifdef KVM_EXIT_TPR_ACCESS
 		case KVM_EXIT_TPR_ACCESS:
-			r = kvm_handle_tpr_access(vcpu);
+			r = kvm_handle_tpr_access(env);
 			break;
 #endif
 		default:
@@ -284,7 +284,7 @@ int kvm_destroy_memory_alias(kvm_context_t kvm, uint64_t phys_start)
 int kvm_get_lapic(kvm_vcpu_context_t vcpu, struct kvm_lapic_state *s)
 {
 	int r;
-	if (!kvm_irqchip_in_kernel(vcpu->kvm))
+	if (!kvm_irqchip_in_kernel())
 		return 0;
 	r = ioctl(vcpu->fd, KVM_GET_LAPIC, s);
 	if (r == -1) {
@@ -297,7 +297,7 @@ int kvm_get_lapic(kvm_vcpu_context_t vcpu, struct kvm_lapic_state *s)
 int kvm_set_lapic(kvm_vcpu_context_t vcpu, struct kvm_lapic_state *s)
 {
 	int r;
-	if (!kvm_irqchip_in_kernel(vcpu->kvm))
+	if (!kvm_irqchip_in_kernel())
 		return 0;
 	r = ioctl(vcpu->fd, KVM_SET_LAPIC, s);
 	if (r == -1) {
@@ -364,7 +364,6 @@ void kvm_show_code(kvm_vcpu_context_t vcpu)
 	unsigned char code;
 	char code_str[SHOW_CODE_LEN * 3 + 1];
 	unsigned long rip;
-	kvm_context_t kvm = vcpu->kvm;
 
 	r = ioctl(fd, KVM_GET_SREGS, &sregs);
 	if (r == -1) {
@@ -384,11 +383,7 @@ void kvm_show_code(kvm_vcpu_context_t vcpu)
 	for (n = -back_offset; n < SHOW_CODE_LEN-back_offset; ++n) {
 		if (n == 0)
 			strcat(code_str, " -->");
-		r = kvm_mmio_read(kvm->opaque, rip + n, &code, 1);
-		if (r < 0) {
-			strcat(code_str, " xx");
-			continue;
-		}
+		cpu_physical_memory_rw(rip + n, &code, 1, 1);
 		sprintf(code_str + strlen(code_str), " %02x", code);
 	}
 	fprintf(stderr, "code:%s\n", code_str);
@@ -543,19 +538,19 @@ void kvm_show_regs(kvm_vcpu_context_t vcpu)
 		sregs.efer);
 }
 
-uint64_t kvm_get_apic_base(kvm_vcpu_context_t vcpu)
+static uint64_t kvm_get_apic_base(CPUState *env)
 {
-	return vcpu->run->apic_base;
+	return env->kvm_run->apic_base;
 }
 
-void kvm_set_cr8(kvm_vcpu_context_t vcpu, uint64_t cr8)
+static void kvm_set_cr8(CPUState *env, uint64_t cr8)
 {
-	vcpu->run->cr8 = cr8;
+	env->kvm_run->cr8 = cr8;
 }
 
-__u64 kvm_get_cr8(kvm_vcpu_context_t vcpu)
+static __u64 kvm_get_cr8(CPUState *env)
 {
-	return vcpu->run->cr8;
+	return env->kvm_run->cr8;
 }
 
 int kvm_setup_cpuid(kvm_vcpu_context_t vcpu, int nent,
@@ -1362,7 +1357,7 @@ int kvm_arch_init_vcpu(CPUState *cenv)
     return 0;
 }
 
-int kvm_arch_halt(void *opaque, kvm_vcpu_context_t vcpu)
+int kvm_arch_halt(kvm_vcpu_context_t vcpu)
 {
     CPUState *env = cpu_single_env;
 
@@ -1376,19 +1371,19 @@ int kvm_arch_halt(void *opaque, kvm_vcpu_context_t vcpu)
 
 void kvm_arch_pre_kvm_run(void *opaque, CPUState *env)
 {
-    if (!kvm_irqchip_in_kernel(kvm_context))
-	kvm_set_cr8(env->kvm_cpu_state.vcpu_ctx, cpu_get_apic_tpr(env));
+    if (!kvm_irqchip_in_kernel())
+	kvm_set_cr8(env, cpu_get_apic_tpr(env));
 }
 
 void kvm_arch_post_kvm_run(void *opaque, CPUState *env)
 {
     cpu_single_env = env;
 
-    env->eflags = kvm_get_interrupt_flag(env->kvm_cpu_state.vcpu_ctx)
+    env->eflags = kvm_get_interrupt_flag(env)
 	? env->eflags | IF_MASK : env->eflags & ~IF_MASK;
 
-    cpu_set_apic_tpr(env, kvm_get_cr8(env->kvm_cpu_state.vcpu_ctx));
-    cpu_set_apic_base(env, kvm_get_apic_base(env->kvm_cpu_state.vcpu_ctx));
+    cpu_set_apic_tpr(env, kvm_get_cr8(env));
+    cpu_set_apic_base(env, kvm_get_apic_base(env));
 }
 
 int kvm_arch_has_work(CPUState *env)
@@ -1405,7 +1400,7 @@ int kvm_arch_try_push_interrupts(void *opaque)
     CPUState *env = cpu_single_env;
     int r, irq;
 
-    if (kvm_is_ready_for_interrupt_injection(env->kvm_cpu_state.vcpu_ctx) &&
+    if (kvm_is_ready_for_interrupt_injection(env) &&
         (env->interrupt_request & CPU_INTERRUPT_HARD) &&
         (env->eflags & IF_MASK)) {
             env->interrupt_request &= ~CPU_INTERRUPT_HARD;
@@ -1440,7 +1435,7 @@ void kvm_arch_cpu_reset(CPUState *env)
 {
     kvm_arch_load_regs(env);
     if (!cpu_is_bsp(env)) {
-	if (kvm_irqchip_in_kernel(kvm_context)) {
+	if (kvm_irqchip_in_kernel()) {
 #ifdef KVM_CAP_MP_STATE
 	    kvm_reset_mpstate(env->kvm_cpu_state.vcpu_ctx);
 #endif

@@ -13,6 +13,7 @@
 #endif
 
 #include <signal.h>
+#include <stdlib.h>
 
 #ifdef CONFIG_KVM
 
@@ -77,9 +78,6 @@ struct kvm_context {
 
 struct kvm_vcpu_context {
     int fd;
-    struct kvm_run *run;
-    struct kvm_context *kvm;
-    uint32_t id;
 };
 
 typedef struct kvm_context *kvm_context_t;
@@ -93,7 +91,8 @@ int kvm_alloc_userspace_memory(kvm_context_t kvm, unsigned long memory,
 
 int kvm_arch_create(kvm_context_t kvm, unsigned long phys_mem_bytes,
                     void **vm_mem);
-int kvm_arch_run(kvm_vcpu_context_t vcpu);
+
+int kvm_arch_run(CPUState *env);
 
 
 void kvm_show_code(kvm_vcpu_context_t vcpu);
@@ -106,7 +105,6 @@ int handle_shutdown(kvm_context_t kvm, CPUState *env);
 void post_kvm_run(kvm_context_t kvm, CPUState *env);
 int pre_kvm_run(kvm_context_t kvm, CPUState *env);
 int handle_io_window(kvm_context_t kvm);
-int handle_debug(kvm_vcpu_context_t vcpu, void *env);
 int try_push_interrupts(kvm_context_t kvm);
 
 #if defined(__x86_64__) || defined(__i386__)
@@ -217,18 +215,7 @@ int kvm_run(kvm_vcpu_context_t vcpu, void *env);
  * \param vcpu Which virtual CPU should get dumped
  * \return interrupt flag value (0 or 1)
  */
-int kvm_get_interrupt_flag(kvm_vcpu_context_t vcpu);
-
-/*!
- * \brief Get the value of the APIC_BASE msr as of last exit to userspace
- *
- * This gets the APIC_BASE msr as it was on the last exit to userspace.
- *
- * \param kvm Pointer to the current kvm_context
- * \param vcpu Which virtual CPU should get dumped
- * \return APIC_BASE msr contents
- */
-uint64_t kvm_get_apic_base(kvm_vcpu_context_t vcpu);
+int kvm_get_interrupt_flag(CPUState *env);
 
 /*!
  * \brief Check if a vcpu is ready for interrupt injection
@@ -239,7 +226,7 @@ uint64_t kvm_get_apic_base(kvm_vcpu_context_t vcpu);
  * \param vcpu Which virtual CPU should get dumped
  * \return boolean indicating interrupt injection readiness
  */
-int kvm_is_ready_for_interrupt_injection(kvm_vcpu_context_t vcpu);
+int kvm_is_ready_for_interrupt_injection(CPUState *env);
 
 /*!
  * \brief Read VCPU registers
@@ -423,28 +410,6 @@ int kvm_set_shadow_pages(kvm_context_t kvm, unsigned int nrshadow_pages);
  */
 int kvm_get_shadow_pages(kvm_context_t kvm, unsigned int *nrshadow_pages);
 
-/*!
- * \brief Set up cr8 for next time the vcpu is executed
- *
- * This is a fast setter for cr8, which will be applied when the
- * vcpu next enters guest mode.
- *
- * \param kvm Pointer to the current kvm_context
- * \param vcpu Which virtual CPU should get dumped
- * \param cr8 next cr8 value
- */
-void kvm_set_cr8(kvm_vcpu_context_t vcpu, uint64_t cr8);
-
-/*!
- * \brief Get cr8 for sync tpr in qemu apic emulation
- *
- * This is a getter for cr8, which used to sync with the tpr in qemu
- * apic emualtion.
- *
- * \param kvm Pointer to the current kvm_context
- * \param vcpu Which virtual CPU should get dumped
- */
-__u64 kvm_get_cr8(kvm_vcpu_context_t vcpu);
 #endif
 
 /*!
@@ -551,13 +516,6 @@ int kvm_dirty_pages_log_enable_all(kvm_context_t kvm);
  * \param kvm Pointer to the current kvm_context
  */
 int kvm_dirty_pages_log_reset(kvm_context_t kvm);
-
-/*!
- * \brief Query whether in kernel irqchip is used
- *
- * \param kvm Pointer to the current kvm_context
- */
-int kvm_irqchip_in_kernel(kvm_context_t kvm);
 
 #ifdef KVM_CAP_IRQCHIP
 /*!
@@ -1115,13 +1073,12 @@ struct ioperm_data {
 };
 
 void qemu_kvm_cpu_stop(CPUState *env);
-int kvm_arch_halt(void *opaque, kvm_vcpu_context_t vcpu);
+int kvm_arch_halt(kvm_vcpu_context_t vcpu);
 int handle_tpr_access(void *opaque, kvm_vcpu_context_t vcpu, uint64_t rip,
                       int is_write);
 int kvm_has_sync_mmu(void);
 
 #define kvm_enabled() (kvm_allowed)
-#define qemu_kvm_irqchip_in_kernel() kvm_irqchip_in_kernel(kvm_context)
 #define qemu_kvm_pit_in_kernel() kvm_pit_in_kernel(kvm_context)
 #define qemu_kvm_has_gsi_routing() kvm_has_gsi_routing(kvm_context)
 #ifdef TARGET_I386
@@ -1133,7 +1090,6 @@ void kvm_load_tsc(CPUState *env);
 #define kvm_has_sync_mmu() (0)
 #define kvm_enabled() (0)
 #define kvm_nested 0
-#define qemu_kvm_irqchip_in_kernel() (0)
 #define qemu_kvm_pit_in_kernel() (0)
 #define qemu_kvm_has_gsi_routing() (0)
 #ifndef QEMU_KVM_NO_CPU
@@ -1156,18 +1112,6 @@ static inline void kvm_load_tsc(CPUState *env)
 void kvm_mutex_unlock(void);
 void kvm_mutex_lock(void);
 
-static inline void qemu_mutex_unlock_iothread(void)
-{
-    if (kvm_enabled())
-        kvm_mutex_unlock();
-}
-
-static inline void qemu_mutex_lock_iothread(void)
-{
-    if (kvm_enabled())
-        kvm_mutex_lock();
-}
-
 int kvm_physical_sync_dirty_bitmap(target_phys_addr_t start_addr,
                                    target_phys_addr_t end_addr);
 
@@ -1186,7 +1130,6 @@ void kvm_arch_get_registers(CPUState *env);
 static inline void kvm_arch_put_registers(CPUState *env)
 {
     kvm_load_registers(env);
-    kvm_load_mpstate(env);
 }
 
 void kvm_cpu_synchronize_state(CPUState *env);
@@ -1209,6 +1152,8 @@ static inline int kvm_set_migration_log(int enable)
     return kvm_physical_memory_set_dirty_tracking(enable);
 }
 
+
+int kvm_irqchip_in_kernel(void);
 #ifdef CONFIG_KVM
 
 typedef struct KVMSlot {
@@ -1231,6 +1176,8 @@ typedef struct KVMState {
 #ifdef KVM_CAP_SET_GUEST_DEBUG
     QTAILQ_HEAD(, kvm_sw_breakpoint) kvm_sw_breakpoints;
 #endif
+    int irqchip_in_kernel;
+
     struct kvm_context kvm_context;
 } KVMState;
 

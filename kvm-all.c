@@ -155,12 +155,14 @@ static void kvm_reset_vcpu(void *opaque)
         abort();
     }
 }
+#endif
 
 int kvm_irqchip_in_kernel(void)
 {
     return kvm_state->irqchip_in_kernel;
 }
 
+#ifdef KVM_UPSTREAM
 int kvm_pit_in_kernel(void)
 {
     return kvm_state->pit_in_kernel;
@@ -607,7 +609,9 @@ int kvm_cpu_exec(CPUState *env)
         }
 
         kvm_arch_pre_run(env, run);
+        qemu_mutex_unlock_iothread();
         ret = kvm_vcpu_ioctl(env, KVM_RUN, 0);
+        qemu_mutex_lock_iothread();
         kvm_arch_post_run(env, run);
 
         if (ret == -EINTR || ret == -EAGAIN) {

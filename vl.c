@@ -2964,11 +2964,11 @@ static int ram_save_block(QEMUFile *f)
             p = qemu_get_ram_ptr(current_addr);
 
             if (is_dup_page(p, *p)) {
-                qemu_put_be64(f, current_addr | RAM_SAVE_FLAG_COMPRESS);
-                qemu_put_byte(f, *p);
+		qemu_put_be64(f, current_addr | RAM_SAVE_FLAG_COMPRESS);
+		qemu_put_byte(f, *p);
             } else {
-                qemu_put_be64(f, current_addr | RAM_SAVE_FLAG_PAGE);
-                qemu_put_buffer(f, p, TARGET_PAGE_SIZE);
+		qemu_put_be64(f, current_addr | RAM_SAVE_FLAG_PAGE);
+		qemu_put_buffer(f, p, TARGET_PAGE_SIZE);
             }
 
             found = 1;
@@ -3040,12 +3040,12 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
     bwidth = get_clock();
 
     while (!qemu_file_rate_limit(f)) {
-        int ret;
+	int ret;
 
-        ret = ram_save_block(f);
-        bytes_transferred += ret * TARGET_PAGE_SIZE;
-        if (ret == 0) /* no more blocks */
-            break;
+	ret = ram_save_block(f);
+	bytes_transferred += ret * TARGET_PAGE_SIZE;
+	if (ret == 0) /* no more blocks */
+	    break;
     }
 
     bwidth = get_clock() - bwidth;
@@ -3054,7 +3054,7 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
     /* if we haven't transferred anything this round, force expected_time to a
      * a very high value, but without crashing */
     if (bwidth == 0)
-        bwidth = 0.000001;
+	bwidth = 0.000001;
 
     /* try transferring iterative blocks of memory */
 
@@ -3102,8 +3102,9 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
                 madvise(qemu_get_ram_ptr(addr), TARGET_PAGE_SIZE, MADV_DONTNEED);
             }
 #endif
-        } else if (flags & RAM_SAVE_FLAG_PAGE)
+        } else if (flags & RAM_SAVE_FLAG_PAGE) {
             qemu_get_buffer(f, qemu_get_ram_ptr(addr), TARGET_PAGE_SIZE);
+        }
     } while (!(flags & RAM_SAVE_FLAG_EOS));
 
     return 0;
@@ -3609,8 +3610,8 @@ void qemu_notify_event(void)
 }
 
 #ifdef KVM_UPSTREAM
-#define qemu_mutex_lock_iothread() do { } while (0)
-#define qemu_mutex_unlock_iothread() do { } while (0)
+void qemu_mutex_lock_iothread(void) {}
+void qemu_mutex_unlock_iothread(void) {}
 #endif
 
 void vm_stop(int reason)
@@ -3810,7 +3811,7 @@ static void qemu_signal_lock(unsigned int msecs)
     qemu_mutex_unlock(&qemu_fair_mutex);
 }
 
-static void qemu_mutex_lock_iothread(void)
+void qemu_mutex_lock_iothread(void)
 {
     if (kvm_enabled()) {
         qemu_mutex_lock(&qemu_fair_mutex);
@@ -3820,7 +3821,7 @@ static void qemu_mutex_lock_iothread(void)
         qemu_signal_lock(100);
 }
 
-static void qemu_mutex_unlock_iothread(void)
+void qemu_mutex_unlock_iothread(void)
 {
     qemu_mutex_unlock(&qemu_global_mutex);
 }
