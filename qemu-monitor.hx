@@ -1046,6 +1046,36 @@ STEXI
 Set CPU @var{cpu} online or offline.
 ETEXI
 
+#ifdef SAP_XBRLE
+ETEXI
+
+    {
+        .name       = "migrate_warmup",
+        .args_type  = "detach:-d,uri:s",
+        .params     = "[-d] [-w] uri",
+        .help       = "Initate migration warmup phase to URI (using -d to not wait for completion)",
+        .mhandler.cmd = do_migrate_warmup,
+    },
+
+STEXI
+@item migrate_warmup [-d] [-w] @var{uri}
+Initate migration warmup phase to @var{uri} (using -d to not wait for completion).
+
+ETEXI
+
+    {
+        .name       = "migrate_full",
+        .args_type  = "",
+        .params     = "",
+        .help       = "Switch from warmup phase to full live migration",
+        .mhandler.cmd = do_migrate_warmup_full,
+    },
+
+STEXI
+@item migrate_warmup [-d] @var{uri}
+Initate migration warmup phase to @var{uri} (using -d to not wait for completion).
+#endif /* SAP_XBRLE */
+
 STEXI
 @end table
 ETEXI

@@ -106,6 +106,9 @@ block-obj-y +=  $(addprefix block/, $(block-nested-y))
 # CPUs and machines.
 
 obj-y = $(block-obj-y)
+ifeq ($(CONFIG_SAP_XBRLE),yes)
+obj-y += qemu-common.o
+endif
 obj-y += readline.o console.o
 
 obj-y += tcg-runtime.o host-utils.o

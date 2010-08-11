@@ -1126,6 +1126,19 @@ int qemu_savevm_state_begin(QEMUFile *f) {
 	return 0;
 }
 
+#ifdef SAP_XBRLE
+int qemu_savevm_state_warmup(QEMUFile *f) {
+	int ret = 1;
+
+	ret = qemu_savevm_state_iterate(f);
+
+	if (ret == -EIO)
+		return ret;
+
+	return 0;
+}
+#endif /* SAP_XBRLE */
+
 int qemu_savevm_state_iterate(QEMUFile *f) {
 	SaveStateEntry *se;
 	int ret = 1;

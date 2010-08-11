@@ -18,6 +18,9 @@
 #include "sysemu.h"
 #include "buffered_file.h"
 #include "block.h"
+#ifdef SAP_XBRLE
+#include <time.h>
+#endif /* SAP_XBRLE */
 
 //#define DEBUG_MIGRATION_TCP
 
@@ -28,6 +31,12 @@
 #define dprintf(fmt, ...) \
     do { } while (0)
 #endif
+
+#ifdef SAP_XBRLE */
+struct timeval migration_startTime;
+struct timeval migration_freezeTime;
+struct timeval migration_stopTime;
+#endif /* SAP_XBRLE */
 
 static int socket_errno(FdMigrationState *s)
 {
@@ -72,6 +81,9 @@ static void tcp_wait_for_connect(void *opaque)
         migrate_fd_connect(s);
     else {
         dprintf("error connecting %d\n", val);
+#ifdef SAP_XBRLE
+        stderr_puts_timestamp("(tcp_wait_for_connect): error connecting\n");
+#endif /* SAP_XBRLE */
         migrate_fd_error(s);
     }
 }
@@ -83,6 +95,10 @@ MigrationState *tcp_start_outgoing_migration(const char *host_port,
     struct sockaddr_in addr;
     FdMigrationState *s;
     int ret;
+
+#ifdef SAP_XBRLE
+    stderr_puts_timestamp("(tcp_start_outgoing_migration): Starting outgoing migration\n");
+#endif /* SAP_XBRLE */
 
     if (parse_host_port(&addr, host_port) < 0)
         return NULL;
@@ -121,6 +137,9 @@ MigrationState *tcp_start_outgoing_migration(const char *host_port,
 
     if (ret < 0 && ret != -EINPROGRESS && ret != -EWOULDBLOCK) {
         dprintf("connect failed\n");
+#ifdef SAP_XBRLE
+	stderr_puts_timestamp("(tcp_start_outgoing_migration): connect failed\n");
+#endif /* SAP_XBRLE */
         close(s->fd);
         qemu_free(s);
         return NULL;
@@ -143,25 +162,44 @@ static void tcp_accept_incoming_migration(void *opaque)
     } while (c == -1 && socket_error() == EINTR);
 
     dprintf("accepted migration\n");
+#ifdef SAP_XBRLE
+    stderr_puts_timestamp("(tcp_accept_incoming_migration): Accepted incoming migration\n");
+#endif /* SAP_XBRLE */
 
     if (c == -1) {
         fprintf(stderr, "could not accept migration connection\n");
+#ifdef SAP_XBRLE
+        stderr_puts_timestamp("(tcp_accept_incoming_migration): could not accept migration connection\n");
+#endif /* SAP_XBRLE */
         return;
     }
 
     f = qemu_fopen_socket(c);
     if (f == NULL) {
         fprintf(stderr, "could not qemu_fopen socket\n");
+#ifdef SAP_XBRLE
+        stderr_puts_timestamp("(tcp_accept_incoming_migration): could not qemu_fopen socket\n")
+#endif /* SAP_XBRLE */
         goto out;
     }
 
+#ifdef SAP_XBRLE
+    initXBRLEComprBuffers();
+#endif /* SAP_XBRLE */
     ret = qemu_loadvm_state(f);
     if (ret < 0) {
         fprintf(stderr, "load of migration failed\n");
+#ifdef SAP_XBRLE
+        stderr_puts_timestamp("(tcp_accept_incoming_migration): load of migration failed\n");
+#endif /* SAP_XBRLE */
         goto out_fopen;
     }
     qemu_announce_self();
     dprintf("successfully loaded vm state\n");
+#ifdef SAP_XBRLE
+    stderr_puts_timestamp("(tcp_accept_incoming_migration): successfully loaded vm state\n"); //pesv logging
+    gettimeofday(&migration_stopTime,NULL);
+#endif /* SAP_XBRLE */
 
     /* we've successfully migrated, close the server socket */
     qemu_set_fd_handler2(s, NULL, NULL, NULL, NULL);
@@ -170,6 +208,9 @@ static void tcp_accept_incoming_migration(void *opaque)
         vm_start();
 
 out_fopen:
+#ifdef SAP_XBRLE
+    freeXBRLEComprBuffers();
+#endif /* SAP_XBRLE */
     qemu_fclose(f);
 out:
     close(c);
@@ -183,6 +224,9 @@ int tcp_start_incoming_migration(const char *host_port)
 
     if (parse_host_port(&addr, host_port) < 0) {
         fprintf(stderr, "invalid host/port combination: %s\n", host_port);
+#ifdef SAP_XBRLE
+        stderr_puts_timestamp("(tcp_start_incoming_migration):  invalid host/port combination\n");
+#endif /* SAP_XBRLE */
         return -EINVAL;
     }
 

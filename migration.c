@@ -29,6 +29,10 @@
     do { } while (0)
 #endif
 
+#ifdef SAP_XBRLE
+MigrationParameters migrationParameters;
+#endif /* SAP_XBRLE */
+
 /* Migration speed throttling */
 static uint32_t max_throttle = (32 << 20);
 
@@ -61,6 +65,14 @@ void do_migrate(Monitor *mon, const QDict *qdict)
 
     if (strstart(uri, "tcp:", &p))
         s = tcp_start_outgoing_migration(p, max_throttle, detach);
+#ifdef SAP_XBRLE
+    else if (strstart(uri, "tcp+xbrle:", &p)) {
+	    stderr_puts_timestamp("Compression enabled, compr type: tcp+xbrle! \n"); //pesv warmup
+	    migrationParameters.compressionEnabled = 1;
+	    migrationParameters.compressionType = COMPRESSION_DELTA_XBRLE;
+	    s = tcp_start_outgoing_migration(p, max_throttle, detach);
+    }
+#endif /* SAP_XBRLE */
 #if !defined(WIN32)
     else if (strstart(uri, "exec:", &p))
         s = exec_start_outgoing_migration(p, max_throttle, detach);
@@ -182,6 +194,9 @@ void migrate_fd_monitor_suspend(FdMigrationState *s)
     s->mon_resume = cur_mon;
     if (monitor_suspend(cur_mon) == 0) {
         dprintf("suspending monitor\n");
+#ifdef SAP_XBRLE
+        stderr_puts_timestamp("(migrate_fd_monitor_suspend): suspending monitor\n");
+#endif /* SAP_XBRLE */
     } else {
         monitor_printf(cur_mon, "terminal does not allow synchronous "
                        "migration, continuing detached\n");
@@ -191,6 +206,9 @@ void migrate_fd_monitor_suspend(FdMigrationState *s)
 void migrate_fd_error(FdMigrationState *s)
 {
     dprintf("setting error state\n");
+#ifdef SAP_XBRLE
+    stderr_puts_timestamp("(migrate_fd_error): setting error state\n");
+#endif /* SAP_XBRLE */
     s->state = MIG_STATE_ERROR;
     migrate_fd_cleanup(s);
 }
@@ -255,6 +273,9 @@ void migrate_fd_connect(FdMigrationState *s)
     ret = qemu_savevm_state_begin(s->file);
     if (ret < 0) {
         dprintf("failed, %d\n", ret);
+#ifdef SAP_XBRLE
+	stderr_puts_timestamp("(migrate_fd_connect): failed\n");
+#endif /* SAP_XBRLE */
         migrate_fd_error(s);
         return;
     }
@@ -268,15 +289,26 @@ void migrate_fd_put_ready(void *opaque)
 
     if (s->state != MIG_STATE_ACTIVE) {
         dprintf("put_ready returning because of non-active state\n");
+#ifdef SAP_XBRLE
+        stderr_puts_timestamp("(migrate_fd_put_ready): put_ready returning because of non-active state\n"); //pesv warmup
+#endif /* SAP_XBRLE */
         return;
     }
 
     dprintf("iterate\n");
+#ifdef SAP_XBRLE
+    if (migrationParameters.warmupEnabled == 1) //pesv warmup
+	    qemu_savevm_state_warmup(s->file);
+    else
+#endif /* SAP_XBRLE */
     if (qemu_savevm_state_iterate(s->file) == 1) {
         int state;
         int old_vm_running = vm_running;
 
         dprintf("done iterating\n");
+#ifdef SAP_XBRLE
+        stderr_puts_timestamp("(migrate_fd_put_ready): Stopping vm\n"); //pesv warmup
+#endif /* SAP_XBRLE */
         vm_stop(0);
 
         qemu_aio_flush();
@@ -308,6 +340,9 @@ void migrate_fd_cancel(MigrationState *mig_state)
         return;
 
     dprintf("cancelling migration\n");
+#ifdef SAP_XBRLE
+    stderr_puts_timestamp("(migrate_fd_cancel): cancelling migration\n"); //pesv warmup
+#endif /* SAP_XBRLE */
 
     s->state = MIG_STATE_CANCELLED;
 
@@ -353,3 +388,18 @@ int migrate_fd_close(void *opaque)
     qemu_set_fd_handler2(s->fd, NULL, NULL, NULL, NULL);
     return s->close(s);
 }
+
+#ifdef SAP_XBRLE
+void do_migrate_warmup(Monitor *mon, const QDict *qdict)
+{
+	migrationParameters.warmupEnabled = 1;
+	stderr_puts_timestamp("Warmup is enabled! \n"); //pesv warmup
+	do_migrate(mon,qdict);
+}
+
+void do_migrate_warmup_full(Monitor *mon, const QDict *qdict)
+{
+	stderr_puts_timestamp("Switching to full live migration! \n"); //pesv warmup
+	migrationParameters.warmupEnabled = 0;
+}
+#endif /* SAP_XBRLE */
