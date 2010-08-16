@@ -1556,7 +1556,7 @@ int load_vmstate(Monitor *mon, const char *name) {
 					default:
 					monitor_printf(mon, "Error %d while activating snapshot on"
 							" '%s'\n", ret, bdrv_get_device_name(bs1));
-					stderr_puts_timestamp("Error while activating snapshot\n"); //pesv logging
+					//stderr_puts_timestamp("Error while activating snapshot\n"); //pesv logging
 					break;
 				}
 				/* fatal on snapshot block device */
