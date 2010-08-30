@@ -32,7 +32,7 @@
     do { } while (0)
 #endif
 
-#ifdef SAP_XBRLE */
+#ifdef SAP_XBRLE
 struct timeval migration_startTime;
 struct timeval migration_freezeTime;
 struct timeval migration_stopTime;
