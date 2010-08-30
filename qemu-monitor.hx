@@ -1047,7 +1047,6 @@ Set CPU @var{cpu} online or offline.
 ETEXI
 
 #ifdef SAP_XBRLE
-ETEXI
 
     {
         .name       = "migrate_warmup",
@@ -1060,7 +1059,6 @@ ETEXI
 STEXI
 @item migrate_warmup [-d] [-w] @var{uri}
 Initate migration warmup phase to @var{uri} (using -d to not wait for completion).
-
 ETEXI
 
     {
@@ -1074,6 +1072,21 @@ ETEXI
 STEXI
 @item migrate_warmup [-d] @var{uri}
 Initate migration warmup phase to @var{uri} (using -d to not wait for completion).
+ETEXI
+
+    {
+        .name       = "migrate_set_cachesize",
+        .args_type  = "value:s",
+        .params     = "value",
+        .help       = "set cache size (in MB) for xbrle migrations",
+        .mhandler.cmd = do_migrate_set_cachesize,
+    },
+
+STEXI
+@item migrate_set_cachesize @var{value}
+Set cache size (in MB) for xbrle migrations.
+ETEXI
+
 #endif /* SAP_XBRLE */
 
 STEXI

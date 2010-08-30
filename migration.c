@@ -402,4 +402,27 @@ void do_migrate_warmup_full(Monitor *mon, const QDict *qdict)
 	stderr_puts_timestamp("Switching to full live migration! \n"); //pesv warmup
 	migrationParameters.warmupEnabled = 0;
 }
+
+void do_migrate_set_cachesize(Monitor *mon, const QDict *qdict)
+{
+    double d;
+    char *ptr;
+  //  FdMigrationState *s;
+    const char *value = qdict_get_str(qdict, "value");
+
+    d = strtod(value, &ptr);
+    switch (*ptr) {
+    case 'G': case 'g':
+        d *= 1024;
+    case 'M': case 'm':
+        d *= 1024;
+    case 'K': case 'k':
+        d *= 1024;
+    default:
+        break;
+    }
+
+    migrationParameters.cacheSize = (uint32_t)d;
+//    monitor_printf(mon, "Cache size set to: %s\n", d);
+}
 #endif /* SAP_XBRLE */

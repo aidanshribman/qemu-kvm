@@ -288,45 +288,33 @@ static QEMUTimer *nographic_timer;
 uint8_t qemu_uuid[16];
 
 #ifdef SAP_XBRLE
-#ifndef max
-	#define max( a, b ) ( ((a) > (b)) ? (a) : (b) )
-#endif
-#ifndef min
-	#define min( a, b ) ( ((a) < (b)) ? (a) : (b) )
-#endif
+#define DEFAULT_CACHE_SIZE 0xFFFF //16 MB cache
 
-#define CACHE_SIZE 16384 //128 MB cache
-#define _T1_  0
-#define _T2_  2
-#define _B1_  1
-#define _B2_  3
+struct cacheObj {
+	ram_addr_t slot1_addr;
+	ram_addr_t slot2_addr;
 
-struct cacheObj
-{
-	ram_addr_t id;
-	uint64_t weight;
-	int ARC_list;
-	uint8_t *data;
+	unsigned long slot1_weight;
+	unsigned long slot2_weight;
+
+	uint8_t *slot1_data;
+	uint8_t *slot2_data;
 };
 
 typedef struct cacheObj cacheItem;
-cacheItem ARC[CACHE_SIZE];
+cacheItem *ARC;
+uint32_t cache_size;
 
 uint64_t cacheWeight = 1;
-int target_T1 = CACHE_SIZE/4; //init value, self-tuning
-int T1Length, T2Length, B1Length, B2Length;
-
 void initCacheArray(void);
 void freeCacheArray(void);
 
-int arc_isInARC(ram_addr_t id);
-int arc_isCached(ram_addr_t id);
-int arc_addToCache(ram_addr_t id, uint64_t weight, uint8_t *pdata);
-void arc_updateInCache(int pos, ram_addr_t id, uint64_t weight, int list, uint8_t *pdata);
-void arc_evictToGhost(void);
-void arc_removeFromList(int pos);
-int arc_getSmallestWeight(int list);
-void arc_flushPage(int pos);
+int asc_isCached(ram_addr_t addr);
+int asc_getOldest(cacheItem c);
+int asc_getMostRecent(cacheItem c, ram_addr_t addr);
+void asc_addToCache(ram_addr_t id, unsigned long weight, uint8_t *pdata);
+void asc_updateInCache(unsigned long pos, unsigned long addr, unsigned long weight, uint8_t *pdata, int slot);
+unsigned long asc_getCachePosition(ram_addr_t address);
 
 //XBRLE
 int rle_encodeBuffer(uint8_t *inBuffer, int inBufSize, uint8_t *outBuffer);
@@ -342,10 +330,11 @@ uint8_t rle_getComprFlag(uint8_t *inBuffer);
 void print_struct_array_with_data(uint8_t *array, size_t len);
 
 //benchmarking
-int normalPages;
-int xbrlePages;
-int abortedCompressionPages;
-int iterations;
+uint64_t normalPages;
+uint64_t xbrlePages;
+uint64_t abortedCompressionPages;
+uint64_t blankPages;
+uint64_t iterations;
 uint64_t xbrleBytes;
 #endif /* SAP_XBRLE */
 
@@ -3020,13 +3009,32 @@ void initCacheArray(void)
 	int i;
 	cacheItem cO;
 
-	for (i=0;i<CACHE_SIZE;i++)
+	if (migrationParameters.cacheSize != 0)
+	{
+		cache_size = (migrationParameters.cacheSize/TARGET_PAGE_SIZE) -1;
+	}
+	else
+	{
+		cache_size = DEFAULT_CACHE_SIZE;
+	}
+
+	stderr_puts_timestamp("Setting cache size: ");
+	stderr_puti(cache_size);
+	stderr_puts(" pages\n");
+
+	ARC = (cacheItem*)qemu_mallocz((cache_size+1)* sizeof(cacheItem));
+
+	for (i=0;i<(cache_size+1);i++)
 	{
 		//allocate memory for data
-		cO.data = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
-		cO.weight = 0;
-		cO.id = -1;
-		cO.ARC_list = -1;
+		cO.slot1_data = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
+		cO.slot2_data = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
+
+		cO.slot1_weight = 0;
+		cO.slot2_weight = 0;
+
+		cO.slot1_addr = -1;
+		cO.slot2_addr = -1;
 
 		ARC[i] = cO;
 	}
@@ -3039,7 +3047,9 @@ void initCacheArray(void)
 	rleDeltaData = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
 
 	//currentPage
-    currentPage.data = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
+    currentPage.slot1_data = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
+
+    //stderr_puts_timestamp("Done initCacheArray()\n");
 }
 
 void freeCacheArray(void)
@@ -3048,278 +3058,113 @@ void freeCacheArray(void)
 
 	//stderr_puts_timestamp("Freeing memory for cache arrays");
 
-	for (i=0;i<CACHE_SIZE;i++)
+	for (i=0;i<cache_size;i++)
 	{
 		//free memory for data
-		qemu_free(ARC[i].data);
+		qemu_free(ARC[i].slot1_data);
+		qemu_free(ARC[i].slot2_data);
 	}
 
 	//free memory for XOR Delta
 	qemu_free(deltaData);
 	qemu_free(rleDeltaData);
-	qemu_free(currentPage.data);
+	qemu_free(currentPage.slot1_data);
 }
 
-int arc_isCached(ram_addr_t id)
-{
-	int i;
+unsigned long asc_getCachePosition(ram_addr_t address) {
+	//printf("asc_getCachePosition\n");
+	unsigned long position = ((address/TARGET_PAGE_SIZE) & cache_size);
 
-	for (i=0;i < CACHE_SIZE;i++)
+	return position;
+}
+
+int asc_getMostRecent(cacheItem c, ram_addr_t addr)
+{
+	unsigned long biggestWeigth = 0;
+	int biggestWeightPos = -1;
+
+	if (c.slot1_addr == addr)
 	{
-		//printf("Is in ARC T1/T2 list; i:%d id:%d ARC.id: %d\n",i,id,ARC[i].id);
-		if (ARC[i].id == id)
+		if (c.slot1_weight > biggestWeigth)
 		{
-			if ((ARC[i].ARC_list == _T1_)||(ARC[i].ARC_list == _T2_))
-			{
-				//element found at pos i
-				return i;
-			}
+			biggestWeigth = c.slot1_weight;
+			biggestWeightPos = 1;
 		}
 	}
-	//element not found
-	return -1;
-}
-
-int arc_isInARC(ram_addr_t id)
-{
-	int i;
-
-	for (i=0;i < CACHE_SIZE;i++)
+	if (c.slot2_addr == addr)
 	{
-	//	printf("Is in ARC; i:%d id:%d ARC.id: %d\n",i,id,ARC[i].id);
-		if (ARC[i].id == id)
+		if (c.slot2_weight > biggestWeigth)
 		{
-
-			//element found at pos i
-			return i;
+			biggestWeigth = c.slot2_weight;
+			biggestWeightPos = 2;
 		}
 	}
-	//element not found
-	return -1;
+
+	//printf("Returning most recent addr: %lu pos: %d weight: %lu\n",addr,biggestWeightPos,biggestWeigth);
+	return biggestWeightPos;
 }
 
-void arc_updateInCache(int pos, ram_addr_t id, uint64_t weight, int list, uint8_t *pdata)
+int asc_getOldest(cacheItem c)
 {
+	int smallestWeightSlot = -1;
+
+	if (c.slot1_weight < c.slot2_weight)
+	{
+		smallestWeightSlot = 1;
+	}
+	else
+	{
+		smallestWeightSlot = 2;
+	}
+
+	//printf("Smallest weight is: %lu, slot: %d\n", smallestWeight,smallestWeightSlot);
+	return smallestWeightSlot;
+}
+
+
+int asc_isCached(ram_addr_t addr) {
+	unsigned long pos = asc_getCachePosition(addr);
+	//printf("looking for page addr: %d at %d,\n", addr, pos);
+
+	cacheItem cTemp = ARC[pos];
+	return asc_getMostRecent(cTemp, addr);
+
+}
+
+void asc_updateInCache(unsigned long pos, ram_addr_t addr, uint64_t weight,
+		uint8_t *pdata, int slot) {
 	uint8_t *orgdata;
 	orgdata = pdata;
 
-	memcpy(ARC[pos].data,orgdata,TARGET_PAGE_SIZE);
-	ARC[pos].weight = weight;
-	ARC[pos].ARC_list = list;
-	ARC[pos].id = id;
-}
-
-int arc_getSmallestWeight(int list)
-{
-	int i;
-	int gotFirst = 0;
-	int smallestWeight = 0;
-	int smallestWeightPOS = -1;
-
-	for (i = 0; i < CACHE_SIZE;i++)
-		{
-			if (!gotFirst)
-			{
-				if (ARC[i].ARC_list == list)
-				{
-					smallestWeight = ARC[i].weight;
-					smallestWeightPOS= i;
-					gotFirst = 1;
-				}
-			}
-			else
-			{
-				if (ARC[i].weight < smallestWeight)
-				{
-					if (ARC[i].ARC_list == list)
-					{
-						smallestWeight = ARC[i].weight;
-						smallestWeightPOS = i;
-					}
-				}
-			}
-		}
-	return smallestWeightPOS;
-}
-
-void arc_removeFromList(int pos)
-{
-	ARC[pos].ARC_list = -1;
-	ARC[pos].id = -1;
-	ARC[pos].weight = -1;
-}
-
-void arc_flushPage(int pos)
-{
-	//printf("Flushing page ");
-	switch (ARC[pos].ARC_list)
-	{
-		case _T1_:
-		case _T2_:
-			ARC[pos].id = 0;
-			ARC[pos].weight = -1;
+	//printf("updating page addr: %lu at %lu, slot %d, weight %lu\n", addr, pos, slot,weight);
+	switch (slot) {
+		case 1:
+			memcpy(ARC[pos].slot1_data, orgdata, TARGET_PAGE_SIZE);
+			ARC[pos].slot1_weight = weight;
+			ARC[pos].slot1_addr = addr;
+			break;
+		case 2:
+			memcpy(ARC[pos].slot2_data, orgdata, TARGET_PAGE_SIZE);
+			ARC[pos].slot2_weight = weight;
+			ARC[pos].slot2_addr = addr;
 			break;
 	}
-
 }
 
-void arc_evictToGhost(void)
-{
-	int lrupos;
+void asc_addToCache(unsigned long addr, uint64_t weight, uint8_t *pdata) {
+	//printf("Adding id: %d\n", addr);
+	uint8_t *orgdata;
+	orgdata = pdata;
 
-	if (T1Length >= max(1, target_T1))
-	{
-													//T1 is to big
-		lrupos = arc_getSmallestWeight(_T1_);		//get lru pos from T1
-		ARC[lrupos].ARC_list = _B1_;				//move to B1
+	unsigned long pos;
+	int slot = -1;
+	cacheItem cTemp;
 
-//		printf("evicting id: %d from T1 to B1\n",ARC[lrupos].id);
-		T1Length--;
-		B1Length++;
-	}
-	else
-	{
-													//T1 not too big
-		lrupos = arc_getSmallestWeight(_T2_);		//get lru pos from T2
-		ARC[lrupos].ARC_list = _B2_;				//move to B1
+	pos = asc_getCachePosition(addr);
+	cTemp = ARC[pos];
 
-//		printf("evicting id: %d from T2 to B2\n", ARC[lrupos].id);
-		T2Length--;
-		B2Length++;
-	}
-}
-
-
-int arc_addToCache(ram_addr_t id, uint64_t weight, uint8_t *pdata)
-{
-	//printf("---------------------------------------------\n");
-	cacheItem temp;
-
-	int pos = arc_isInARC(id);
-	int lrupos;
-
-	if (pos != -1)
-	{
-		//page is cahced
-		temp = ARC[pos];
-		//printf("ARC_List: %d\n", temp.ARC_list);
-		switch (temp.ARC_list)
-		{
-			case _T1_:
-				//printf("Page is in ARC T1/T2, updating in T2\n");
-				T1Length--;
-				T2Length++;
-				//fall-through
-			case _T2_:
-
-				arc_updateInCache(pos, id, weight, _T2_, pdata); //seen twice recently put on T2
-				//printf("Page id: %d is in ARC T1/T2, updating in T2\n", temp.id);
-			break;
-
-			case _B1_:
-			case _B2_:
-				//printf("Page is in ARC B1/B2, moving to T2 (list was: %d)\n",temp.ARC_list);
-				if (temp.ARC_list == _B1_)
-				{
-					//printf("B1 hit");
-					target_T1 = min(target_T1 + max((B2Length/B1Length),1),(CACHE_SIZE/2));
-					//printf(" - New target_T1: %d\n", target_T1);
-					B1Length--;
-				}
-				else if (temp.ARC_list == _B2_)
-				{
-					//printf("B2 hit");
-					target_T1 = max(target_T1 - max((B1Length/B2Length),1),0);
-					//printf(" - New target_T1: %d\n", target_T1);
-					B2Length--;
-				}
-
-				arc_removeFromList(pos);
-				arc_evictToGhost();									//make space for page
-
-				pos = arc_isInARC(-1);								//get the empty slot
-				arc_updateInCache(pos, id, weight, _T2_, pdata); 	//seen twice recently put on T2
-				T2Length++;
-				break;
-		}
-	}
-	else
-	{
-		//printf("B1 + T1 length: %d, c: %d\n",T1Length + B1Length,CACHE_SIZE/2);
-		if (T1Length + B1Length == (CACHE_SIZE/2))
-		{
-			//B1 + T1 full
-			//printf("B1 + T1 full\n");
-			if (T1Length < (CACHE_SIZE/2))
-			{
-				//space left in T1
-				//printf("space left in T1\n");
-				lrupos = arc_getSmallestWeight(_B1_);
-				arc_removeFromList(lrupos);
-				B1Length--;
-
-				arc_evictToGhost();								//make space for page
-				pos = lrupos;
-			}
-			else
-			{
-				//B1 is empty
-				//printf("B1 is empty\n");
-				lrupos = arc_getSmallestWeight(_T1_);
-				arc_removeFromList(lrupos);
-				T1Length--;
-				pos = lrupos;
-			}
-		}
-		else
-		{
-			if (T1Length + T2Length + B1Length + B2Length >= (CACHE_SIZE/2))
-			{
-				//cache full
-				//printf("ARC cache (-ghost) full\n");
-				if (T1Length + T2Length + B1Length + B2Length == CACHE_SIZE)
-				{
-					//directory is full
-					//printf("ARC directory full\n");
-					lrupos = arc_getSmallestWeight(_B2_);			//evict B2:s LRU
-					B2Length--;
-					arc_removeFromList(lrupos);
-					arc_evictToGhost();								//make space for page
-					pos = lrupos;
-				}
-				else
-				{
-					//cache is not full
-					//printf("ARC directory NOT full\n");
-
-					lrupos = arc_isInARC(-1);					//get unused position
-					arc_evictToGhost();							//make space for page
-
-					pos = lrupos;
-				}
-			}
-			else
-			{
-				//cache not full
-				//printf("ARC cache (-ghost) NOT full\n");
-				lrupos = arc_isInARC(-1); 			//get unused position
-				pos = lrupos;
-			}
-
-		}
-		//put on t1
-		arc_updateInCache(pos, id, weight, _T1_, pdata); //not seen recently put on T1
-		T1Length++;
-		//printf("Page id: %d is new,  inserted in T1 at %d\n", ARC[pos].id,pos);
-	}
-	//printf("T1Length: %d T2Length: %d B1Length: %d B2Length: %d Target_T1: %d\n",T1Length, T2Length, B1Length, B2Length, target_T1);
-	if (T1Length + T2Length > (CACHE_SIZE/2))
-	{
-		stderr_puts_timestamp("T1+T2 owerflow!");
-		exit(0);
-	}
-
-	return pos;
+	slot = asc_getOldest(cTemp);
+	asc_updateInCache(pos, addr, weight, orgdata, slot);
 }
 
 //debug
@@ -3512,6 +3357,7 @@ static int ram_save_block(QEMUFile *f)
 
 #ifdef SAP_XBRLE
     int cacheLocation = -1;
+    int isCached = -1;
     int i = 0;
 #endif /* SAP_XBRLE */
 
@@ -3537,33 +3383,33 @@ static int ram_save_block(QEMUFile *f)
             p = qemu_get_ram_ptr(current_addr);
 
 #ifdef SAP_XBRLE
-            if (migrationParameters.compressionEnabled)
-		    cacheLocation = arc_isCached(current_addr);
+            if ((migrationParameters.compressionEnabled)&&(migrationParameters.iterativeStage))
+		    isCached = asc_isCached(current_addr); //pesv
 #endif /* SAP_XBRLE */
 
             if (is_dup_page(p, *p)) {
 		    qemu_put_be64(f, current_addr | RAM_SAVE_FLAG_COMPRESS);
 		    qemu_put_byte(f, *p);
 #ifdef SAP_XBRLE
-		    if (cacheLocation != -1)
-			    /* flush blank page from cache */
-			    arc_flushPage(cacheLocation);
+		    blankPages++;
 #endif /* SAP_XBRLE */
             } else {
 #ifdef SAP_XBRLE
 		    //non-blank page
-		    if (migrationParameters.compressionEnabled)
+		    if ((migrationParameters.compressionEnabled)&&(migrationParameters.iterativeStage))
 		    {
 			    int sendCompressed = 0;
 			    int encodedLength = 0;
 
 			    //store snapshot of page
-			    memcpy(currentPage.data, p, TARGET_PAGE_SIZE);
+			    memcpy(currentPage.slot1_data, p, TARGET_PAGE_SIZE);
 
-			    if (cacheLocation != -1) {
+			    if (isCached != -1) {
+
 				    //page is cached!
 				    int xorDeltaSucc = 1;
 				    float changeCounter = 0.0;
+				    cacheLocation = asc_getCachePosition(current_addr);
 				    sendCompressed = 1;
 
 				    xorDeltaSucc = 1;
@@ -3573,19 +3419,27 @@ static int ram_save_block(QEMUFile *f)
 					    // stderr_puts_timestamp("COMPRESSION_DELTA_XBRLE");
 
 					    //create XOR delta
-					    for (i = 0; i < TARGET_PAGE_SIZE; i++) {
-						    deltaData[i] = currentPage.data[i] ^ ARC[cacheLocation].data[i];
+					    for (i = 0; i < TARGET_PAGE_SIZE; i++)
+					    {
+							   switch (isCached)
+							   {
+								   case 1:
+									   deltaData[i] = currentPage.slot1_data[i] ^ ARC[cacheLocation].slot1_data[i];
+									   break;
+								   case 2:
+									   deltaData[i] = currentPage.slot1_data[i] ^ ARC[cacheLocation].slot2_data[i];
+									   break;
+							   }
+
 
 						    if (deltaData[i] != 0) {
 							    changeCounter++;
 						    }
-						    if (i == TARGET_PAGE_SIZE/3) {
+						    if (i == TARGET_PAGE_SIZE * 0.375) {
 							    //printf ("Checking rate of change!%f \n",(changeCounter/i));
-							    if ((changeCounter/i) > 0.5) {
+							    if ((changeCounter/i) > 0.3) {
 								    // stderr_puts_timestamp("Page has changed too much! Aborting delta.\n");
 								    abortedCompressionPages++;
-								    //flush page from cache
-								    arc_flushPage(cacheLocation);
 
 								    xorDeltaSucc = 0;
 								    sendCompressed = 0;
@@ -3602,8 +3456,6 @@ static int ram_save_block(QEMUFile *f)
 							    //RLE compression was not successful, reset the sendCompressed flag
 							    stderr_puts_timestamp("Warning: RLE compression was not successful, resetting the sendCompressed flag!");
 
-							    //flush page from cache
-							    arc_flushPage(cacheLocation);
 							    sendCompressed = 0;
 						    }
 					    }
@@ -3616,8 +3468,6 @@ static int ram_save_block(QEMUFile *f)
 			    }
 			    if (sendCompressed)
 			    {
-				    //update ARC cache
-				    //arc_addToCache(current_addr, cacheWeight++, currentPage.data);
 
 				    //Send RLE-compressed page
 				    //stderr_puts("Send compressed page \n");
@@ -3627,19 +3477,16 @@ static int ram_save_block(QEMUFile *f)
 				    qemu_put_buffer(f, rleDeltaData, encodedLength);
 			    }
 			    else {
-				    //update ARC cache
-				    //arc_addToCache(current_addr, cacheWeight++, p);
-				    //arc_addToCache(current_addr, cacheWeight++, currentPage.data);
 
 				    //stderr_puts("Page not in cache/unsuccesful compression. Send uncompressed page \n");
 				    normalPages++; //pesv benchmarking
 				    qemu_put_be64(f, current_addr | RAM_SAVE_FLAG_PAGE);
 				    //qemu_put_buffer(f, p, TARGET_PAGE_SIZE);
-				    qemu_put_buffer(f, currentPage.data, TARGET_PAGE_SIZE);
+				    qemu_put_buffer(f, currentPage.slot1_data, TARGET_PAGE_SIZE);
 			    }
 
 			    //update ARC cache
-			    arc_addToCache(current_addr, cacheWeight++, currentPage.data);
+			    arc_addToCache(current_addr, cacheWeight++, currentPage.slot1_data);
 		    }
 
 		    else {
@@ -3701,6 +3548,8 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
     uint64_t expected_time = 0;
 #ifdef SAP_XBRLE
     double transferredBytes; //pesv benchmarking
+    static int64_t starttime = 0; //pesv migration downtime bug patch
+    double timediff;  //pesv migration downtime bug patch
 #endif /* SAP_XBRLE */
 
     if (cpu_physical_sync_dirty_bitmap(0, TARGET_PHYS_ADDR_MAX) != 0) {
@@ -3720,14 +3569,24 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
 
 #ifdef SAP_XBRLE
         //pesv LRU caching allocate memory for LRU/RLE cache
-        initCacheArray();
+        if (migrationParameters.compressionEnabled)
+		initCacheArray();
 #endif /* SAP_XBRLE */
 
         qemu_put_be64(f, last_ram_offset | RAM_SAVE_FLAG_MEM_SIZE);
+#ifdef SAP_XBRLE
+        migrationParameters.iterativeStage = false; //pesv
+#endif /* SAP_XBRLE */
     }
 
     bytes_transferred_last = bytes_transferred;
     bwidth = get_clock();
+#ifdef SAP_XBRLE
+    starttime = get_clock(); //pesv migration downtime bug
+
+    if (stage == 2)
+	    migrationParameters.iterativeStage = true; //pesv
+#endif /* SAP_XBRLE */
 
     while (!qemu_file_rate_limit(f)) {
 	int ret;
@@ -3744,6 +3603,10 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
 
     bwidth = get_clock() - bwidth;
     bwidth = (bytes_transferred - bytes_transferred_last) / bwidth;
+#ifdef SAP_XBRLE
+    timediff = get_clock() - starttime; //pesv migration downtime bug
+    bwidth = bytes_transferred / timediff; //pesv migration downtime bug
+#endif /* SAP_XBRLE */
 
     /* if we haven't transferred anything this round, force expected_time to a
      * a very high value, but without crashing */
@@ -3754,6 +3617,11 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
 
     if (stage == 3)
     {
+#ifdef SAP_XBRLE
+	    migrationParameters.iterativeStage = false; //pesv
+	    //migrationParameters.compressionEnabled = false; //disable compression
+#endif
+
         /* flush all remaining blocks regardless of rate limiting */
         while (ram_save_block(f) != 0) {
             bytes_transferred += TARGET_PAGE_SIZE;
@@ -3761,7 +3629,8 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
         cpu_physical_memory_set_dirty_tracking(0);
 #ifdef SAP_XBRLE
         //free memory allocated for caching
-        freeCacheArray(); //pesv
+	if (migrationParameters.compressionEnabled)
+		freeCacheArray(); //pesv
 
         //pesv benchmarking
         transferredBytes = normalPages * TARGET_PAGE_SIZE + xbrleBytes;
@@ -3772,12 +3641,20 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
         stderr_puti(normalPages);
         stderr_puts(", bytes: ");
         stderr_puti(transferredBytes);
-        stderr_puts("\nNo of compressed pages: ");
-        stderr_puti(xbrlePages);
-        stderr_puts(", bytes: ");
-        stderr_puti(xbrleBytes);
-        stderr_puts("\nNo of aborted compression pages: ");
-        stderr_puti(abortedCompressionPages);
+
+        if (migrationParameters.compressionEnabled)
+        {
+			stderr_puts("No of compressed pages: ");
+			stderr_puti(xbrlePages);
+			stderr_puts(", bytes: ");
+			stderr_puti(xbrleBytes);
+			stderr_puts("\nNo of aborted compression pages: ");
+			stderr_puti(abortedCompressionPages);
+			stderr_puts("\nNo of blank pages: ");
+			stderr_puti(blankPages);
+			stderr_puts("\nCacheWeight max value: ");
+			stderr_puti(cacheWeight);
+        }
         stderr_puts("\n");
         //pesv end
 #endif /* SAP_XBRLE */

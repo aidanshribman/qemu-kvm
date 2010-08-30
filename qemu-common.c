@@ -40,9 +40,9 @@ void stderr_puts(const char *s)
 }
 
 /* prints an int to stderr */
-void stderr_puti(int i)
+void stderr_puti(uint64_t i)
 {
-    fprintf(stderr,"%d", i);
+    fprintf(stderr,"%lu", i);
 }
 
 #endif /* SAP_XBRLE */

@@ -105,7 +105,7 @@ int qemu_bh_poll(void);
 void stderr_puttimestamp(void);
 void stderr_puts(const char *s);
 void stderr_puts_timestamp(const char *s);
-void stderr_puti(int i);
+void stderr_puti(uint64_t i);
 #endif /* SAP_XBRLE */
 
 uint64_t muldiv64(uint64_t a, uint32_t b, uint32_t c);

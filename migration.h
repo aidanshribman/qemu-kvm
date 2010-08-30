@@ -60,6 +60,8 @@ struct MigrationParameters {
     int compressionEnabled;
     int compressionType;
     int warmupEnabled;
+    int interativeStage;
+    uint32_t cacheSize;
 };
 
 extern uint8_t *rleDelta, *delta, *newPage;
@@ -143,6 +145,8 @@ static inline FdMigrationState *migrate_to_fms(MigrationState *mig_state)
 void do_migrate_warmup(Monitor *mon, const QDict *qdict);
 
 void do_migrate_warmup_full(Monitor *mon, const QDict *qdict);
+
+void do_migrate_set_cachesize(Monitor *mon, const QDict *qdict);
 #endif /* SAP_XBRLE */
 
 #endif
