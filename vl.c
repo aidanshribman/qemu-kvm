@@ -3486,7 +3486,7 @@ static int ram_save_block(QEMUFile *f)
 			    }
 
 			    //update ARC cache
-			    arc_addToCache(current_addr, cacheWeight++, currentPage.slot1_data);
+			    asc_addToCache(current_addr, cacheWeight++, currentPage.slot1_data);
 		    }
 
 		    else {

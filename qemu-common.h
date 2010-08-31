@@ -253,6 +253,6 @@ typedef struct Monitor Monitor;
 
 #include "module.h"
 
-#endif /* dyngen-exec.h hack */
+#endif /* __DYNGEN_EXEC_H__ */
 
-#endif
+#endif /* QEMU_COMMON_H */
