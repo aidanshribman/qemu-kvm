@@ -60,7 +60,7 @@ struct MigrationParameters {
     int compressionEnabled;
     int compressionType;
     int warmupEnabled;
-    int interativeStage;
+    int iterativeStage;
     uint32_t cacheSize;
 };
 

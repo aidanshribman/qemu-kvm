@@ -32,7 +32,7 @@
     do { } while (0)
 #endif
 
-#ifdef SAP_XBRLE */
+#ifdef SAP_XBRLE
 struct timeval migration_startTime;
 struct timeval migration_freezeTime;
 struct timeval migration_stopTime;
@@ -178,7 +178,7 @@ static void tcp_accept_incoming_migration(void *opaque)
     if (f == NULL) {
         fprintf(stderr, "could not qemu_fopen socket\n");
 #ifdef SAP_XBRLE
-        stderr_puts_timestamp("(tcp_accept_incoming_migration): could not qemu_fopen socket\n")
+        stderr_puts_timestamp("(tcp_accept_incoming_migration): could not qemu_fopen socket\n");
 #endif /* SAP_XBRLE */
         goto out;
     }

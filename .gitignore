@@ -47,3 +47,8 @@ pc-bios/optionrom/multiboot.bin
 pc-bios/optionrom/multiboot.raw
 pc-bios/optionrom/extboot.bin
 .stgit-*
+config-all-devices.h
+config-all-devices.h-timestamp
+config-all-devices.mak
+*.swp
+cscope.*
