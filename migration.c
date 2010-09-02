@@ -134,7 +134,7 @@ void do_migrate_set_speed(Monitor *mon, const QDict *qdict)
  * the choice of nanoseconds is because it is the maximum resolution that
  * get_clock() can achieve. It is an internal measure. All user-visible
  * units must be in seconds */
-static uint64_t max_downtime = 30000000;
+static uint64_t max_downtime = 50;
 
 uint64_t migrate_max_downtime(void)
 {
