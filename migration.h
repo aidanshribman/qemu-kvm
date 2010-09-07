@@ -69,7 +69,6 @@ extern uint8_t *rleDelta, *delta, *newPage;
 extern MigrationParameters migrationParameters;
 
 void initXBRLEComprBuffers(void);
-
 void freeXBRLEComprBuffers(void);
 #endif /* SAP_XBRLE */
 
