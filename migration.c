@@ -67,7 +67,7 @@ void do_migrate(Monitor *mon, const QDict *qdict)
         s = tcp_start_outgoing_migration(p, max_throttle, detach);
 #ifdef SAP_XBRLE
     else if (strstart(uri, "tcp+xbrle:", &p)) {
-	    stderr_puts_timestamp("Compression enabled, compr type: tcp+xbrle! \n"); //pesv warmup
+	    dprintf("Compression XBRLE enabled\n");
 	    migrationParameters.compressionEnabled = 1;
 	    migrationParameters.compressionType = COMPRESSION_DELTA_XBRLE;
 	    s = tcp_start_outgoing_migration(p, max_throttle, detach);
@@ -134,7 +134,7 @@ void do_migrate_set_speed(Monitor *mon, const QDict *qdict)
  * the choice of nanoseconds is because it is the maximum resolution that
  * get_clock() can achieve. It is an internal measure. All user-visible
  * units must be in seconds */
-static uint64_t max_downtime = 30000000;
+static uint64_t max_downtime = 50;
 
 uint64_t migrate_max_downtime(void)
 {
@@ -194,9 +194,6 @@ void migrate_fd_monitor_suspend(FdMigrationState *s)
     s->mon_resume = cur_mon;
     if (monitor_suspend(cur_mon) == 0) {
         dprintf("suspending monitor\n");
-#ifdef SAP_XBRLE
-        stderr_puts_timestamp("(migrate_fd_monitor_suspend): suspending monitor\n");
-#endif /* SAP_XBRLE */
     } else {
         monitor_printf(cur_mon, "terminal does not allow synchronous "
                        "migration, continuing detached\n");
@@ -206,9 +203,6 @@ void migrate_fd_monitor_suspend(FdMigrationState *s)
 void migrate_fd_error(FdMigrationState *s)
 {
     dprintf("setting error state\n");
-#ifdef SAP_XBRLE
-    stderr_puts_timestamp("(migrate_fd_error): setting error state\n");
-#endif /* SAP_XBRLE */
     s->state = MIG_STATE_ERROR;
     migrate_fd_cleanup(s);
 }
@@ -273,9 +267,6 @@ void migrate_fd_connect(FdMigrationState *s)
     ret = qemu_savevm_state_begin(s->file);
     if (ret < 0) {
         dprintf("failed, %d\n", ret);
-#ifdef SAP_XBRLE
-	stderr_puts_timestamp("(migrate_fd_connect): failed\n");
-#endif /* SAP_XBRLE */
         migrate_fd_error(s);
         return;
     }
@@ -289,15 +280,12 @@ void migrate_fd_put_ready(void *opaque)
 
     if (s->state != MIG_STATE_ACTIVE) {
         dprintf("put_ready returning because of non-active state\n");
-#ifdef SAP_XBRLE
-        stderr_puts_timestamp("(migrate_fd_put_ready): put_ready returning because of non-active state\n"); //pesv warmup
-#endif /* SAP_XBRLE */
         return;
     }
 
     dprintf("iterate\n");
 #ifdef SAP_XBRLE
-    if (migrationParameters.warmupEnabled == 1) //pesv warmup
+    if (migrationParameters.warmupEnabled)
 	    qemu_savevm_state_warmup(s->file);
     else
 #endif /* SAP_XBRLE */
@@ -306,9 +294,6 @@ void migrate_fd_put_ready(void *opaque)
         int old_vm_running = vm_running;
 
         dprintf("done iterating\n");
-#ifdef SAP_XBRLE
-        stderr_puts_timestamp("(migrate_fd_put_ready): Stopping vm\n"); //pesv warmup
-#endif /* SAP_XBRLE */
         vm_stop(0);
 
         qemu_aio_flush();
@@ -340,9 +325,6 @@ void migrate_fd_cancel(MigrationState *mig_state)
         return;
 
     dprintf("cancelling migration\n");
-#ifdef SAP_XBRLE
-    stderr_puts_timestamp("(migrate_fd_cancel): cancelling migration\n"); //pesv warmup
-#endif /* SAP_XBRLE */
 
     s->state = MIG_STATE_CANCELLED;
 
@@ -392,14 +374,21 @@ int migrate_fd_close(void *opaque)
 #ifdef SAP_XBRLE
 void do_migrate_warmup(Monitor *mon, const QDict *qdict)
 {
+	if (!vm_running)
+		return;
+	if (migrationParameters.warmupEnabled)
+		return;
+
 	migrationParameters.warmupEnabled = 1;
-	stderr_puts_timestamp("Warmup is enabled! \n"); //pesv warmup
+	monitor_printf(mon, "Warmup is enabled!\n");
 	do_migrate(mon,qdict);
 }
 
 void do_migrate_warmup_full(Monitor *mon, const QDict *qdict)
 {
-	stderr_puts_timestamp("Switching to full live migration! \n"); //pesv warmup
+	if (!migrationParameters.warmupEnabled)
+		return;
+	monitor_printf(mon, "Switching to full live migration!\n");
 	migrationParameters.warmupEnabled = 0;
 }
 
@@ -407,7 +396,6 @@ void do_migrate_set_cachesize(Monitor *mon, const QDict *qdict)
 {
     double d;
     char *ptr;
-  //  FdMigrationState *s;
     const char *value = qdict_get_str(qdict, "value");
 
     d = strtod(value, &ptr);
@@ -423,6 +411,6 @@ void do_migrate_set_cachesize(Monitor *mon, const QDict *qdict)
     }
 
     migrationParameters.cacheSize = (uint32_t)d;
-//    monitor_printf(mon, "Cache size set to: %s\n", d);
+    monitor_printf(mon, "Cache size set to: %d\n", (uint32_t)d);
 }
 #endif /* SAP_XBRLE */
