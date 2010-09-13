@@ -22,11 +22,6 @@
 #define MIG_STATE_CANCELLED	1
 #define MIG_STATE_ACTIVE	2
 
-#ifdef SAP_XBRLE
-# define COMPRESSION_NONE 0
-# define COMPRESSION_DELTA_XBRLE 1
-#endif /* SAP_XBRLE */
-
 typedef struct MigrationState MigrationState;
 
 struct MigrationState
@@ -54,22 +49,20 @@ struct FdMigrationState
 };
 
 #ifdef SAP_XBRLE
-typedef struct MigrationParameters MigrationParameters;
 
-struct MigrationParameters {
-    int compressionEnabled;
-    int compressionType;
-    int warmupEnabled;
-    int iterativeStage;
-    uint32_t cacheSize;
-};
+#define COMP_NONE 0x0
+#define COMP_XBRLE 0x1
 
+extern int mig_compression_type;
+
+extern uint32_t mig_cache_size;
 extern uint8_t *rleDelta, *delta, *newPage;
 
-extern MigrationParameters migrationParameters;
-
 void initXBRLEComprBuffers(void);
+
 void freeXBRLEComprBuffers(void);
+
+void do_migrate_set_compression(Monitor *mon, const QDict *qdict);
 #endif /* SAP_XBRLE */
 
 void qemu_start_incoming_migration(const char *uri);

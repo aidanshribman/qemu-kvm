@@ -1087,6 +1087,19 @@ STEXI
 Set cache size (in MB) for xbrle migrations.
 ETEXI
 
+    {
+        .name       = "migrate_set_compression",
+        .args_type  = "value:s",
+        .params     = "value",
+        .help       = "Set migration page compression to (none|xbrle)",
+        .mhandler.cmd = do_migrate_set_compression,
+    },
+
+STEXI
+@item migrate_set_compression @var{value}
+Set migration page compression to (none|xbrle).
+ETEXI
+
 #endif /* SAP_XBRLE */
 
 STEXI

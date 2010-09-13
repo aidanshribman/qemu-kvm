@@ -30,7 +30,9 @@
 #endif
 
 #ifdef SAP_XBRLE
-MigrationParameters migrationParameters;
+int mig_compression_type = 0;
+uint32_t mig_cache_size = 0;
+static int is_mig_warmup = 0;
 #endif /* SAP_XBRLE */
 
 /* Migration speed throttling */
@@ -65,14 +67,6 @@ void do_migrate(Monitor *mon, const QDict *qdict)
 
     if (strstart(uri, "tcp:", &p))
         s = tcp_start_outgoing_migration(p, max_throttle, detach);
-#ifdef SAP_XBRLE
-    else if (strstart(uri, "tcp+xbrle:", &p)) {
-	    dprintf("Compression XBRLE enabled\n");
-	    migrationParameters.compressionEnabled = 1;
-	    migrationParameters.compressionType = COMPRESSION_DELTA_XBRLE;
-	    s = tcp_start_outgoing_migration(p, max_throttle, detach);
-    }
-#endif /* SAP_XBRLE */
 #if !defined(WIN32)
     else if (strstart(uri, "exec:", &p))
         s = exec_start_outgoing_migration(p, max_throttle, detach);
@@ -159,6 +153,17 @@ void do_migrate_set_downtime(Monitor *mon, const QDict *qdict)
     }
 
     max_downtime = (uint64_t)d;
+}
+
+void do_migrate_set_compression(Monitor *mon, const QDict *qdict)
+{
+    const char *value = qdict_get_str(qdict, "value");
+
+    if (!strcmp(value,"none")) {
+        mig_compression_type = COMP_NONE;
+    } else if (!strcmp(value,"xbrle")) {
+        mig_compression_type = COMP_XBRLE;
+    }
 }
 
 void do_info_migrate(Monitor *mon)
@@ -285,7 +290,7 @@ void migrate_fd_put_ready(void *opaque)
 
     dprintf("iterate\n");
 #ifdef SAP_XBRLE
-    if (migrationParameters.warmupEnabled)
+    if (is_mig_warmup)
 	    qemu_savevm_state_warmup(s->file);
     else
 #endif /* SAP_XBRLE */
@@ -376,20 +381,22 @@ void do_migrate_warmup(Monitor *mon, const QDict *qdict)
 {
 	if (!vm_running)
 		return;
-	if (migrationParameters.warmupEnabled)
+	if (is_mig_warmup)
 		return;
 
-	migrationParameters.warmupEnabled = 1;
 	monitor_printf(mon, "Warmup is enabled!\n");
 	do_migrate(mon,qdict);
+	is_mig_warmup = 1;
 }
 
 void do_migrate_warmup_full(Monitor *mon, const QDict *qdict)
 {
-	if (!migrationParameters.warmupEnabled)
+	if (!vm_running)
+		return;
+	if (!is_mig_warmup)
 		return;
 	monitor_printf(mon, "Switching to full live migration!\n");
-	migrationParameters.warmupEnabled = 0;
+	is_mig_warmup = 0;
 }
 
 void do_migrate_set_cachesize(Monitor *mon, const QDict *qdict)
@@ -410,7 +417,7 @@ void do_migrate_set_cachesize(Monitor *mon, const QDict *qdict)
         break;
     }
 
-    migrationParameters.cacheSize = (uint32_t)d;
+    mig_cache_size = (uint32_t)d;
     monitor_printf(mon, "Cache size set to: %d\n", (uint32_t)d);
 }
 #endif /* SAP_XBRLE */
