@@ -56,13 +56,12 @@ struct FdMigrationState
 extern int mig_compression_type;
 
 extern uint32_t mig_cache_size;
+
 extern uint8_t *rleDelta, *delta, *newPage;
 
 void initXBRLEComprBuffers(void);
 
 void freeXBRLEComprBuffers(void);
-
-void do_migrate_set_compression(Monitor *mon, const QDict *qdict);
 #endif /* SAP_XBRLE */
 
 void qemu_start_incoming_migration(const char *uri);
@@ -136,9 +135,11 @@ static inline FdMigrationState *migrate_to_fms(MigrationState *mig_state)
 #ifdef SAP_XBRLE
 void do_migrate_warmup(Monitor *mon, const QDict *qdict);
 
-void do_migrate_warmup_full(Monitor *mon, const QDict *qdict);
+void do_migrate_warmup_end(Monitor *mon, const QDict *qdict);
 
 void do_migrate_set_cachesize(Monitor *mon, const QDict *qdict);
+
+void do_migrate_set_compression(Monitor *mon, const QDict *qdict);
 #endif /* SAP_XBRLE */
 
 #endif

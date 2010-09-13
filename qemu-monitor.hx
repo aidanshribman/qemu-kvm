@@ -1062,16 +1062,16 @@ Initate migration warmup phase to @var{uri} (using -d to not wait for completion
 ETEXI
 
     {
-        .name       = "migrate_full",
+        .name       = "migrate_warmup_end",
         .args_type  = "",
         .params     = "",
         .help       = "Switch from warmup phase to full live migration",
-        .mhandler.cmd = do_migrate_warmup_full,
+        .mhandler.cmd = do_migrate_warmup_end,
     },
 
 STEXI
-@item migrate_warmup [-d] @var{uri}
-Initate migration warmup phase to @var{uri} (using -d to not wait for completion).
+@item migrate_warmup_end
+Switch from warmup phase to full live migration.
 ETEXI
 
     {

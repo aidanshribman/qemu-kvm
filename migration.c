@@ -155,17 +155,6 @@ void do_migrate_set_downtime(Monitor *mon, const QDict *qdict)
     max_downtime = (uint64_t)d;
 }
 
-void do_migrate_set_compression(Monitor *mon, const QDict *qdict)
-{
-    const char *value = qdict_get_str(qdict, "value");
-
-    if (!strcmp(value,"none")) {
-        mig_compression_type = COMP_NONE;
-    } else if (!strcmp(value,"xbrle")) {
-        mig_compression_type = COMP_XBRLE;
-    }
-}
-
 void do_info_migrate(Monitor *mon)
 {
     MigrationState *s = current_migration;
@@ -389,7 +378,7 @@ void do_migrate_warmup(Monitor *mon, const QDict *qdict)
 	is_mig_warmup = 1;
 }
 
-void do_migrate_warmup_full(Monitor *mon, const QDict *qdict)
+void do_migrate_warmup_end(Monitor *mon, const QDict *qdict)
 {
 	if (!vm_running)
 		return;
@@ -420,4 +409,16 @@ void do_migrate_set_cachesize(Monitor *mon, const QDict *qdict)
     mig_cache_size = (uint32_t)d;
     monitor_printf(mon, "Cache size set to: %d\n", (uint32_t)d);
 }
+
+void do_migrate_set_compression(Monitor *mon, const QDict *qdict)
+{
+    const char *value = qdict_get_str(qdict, "value");
+
+    if (!strcmp(value,"none")) {
+        mig_compression_type = COMP_NONE;
+    } else if (!strcmp(value,"xbrle")) {
+        mig_compression_type = COMP_XBRLE;
+    }
+}
 #endif /* SAP_XBRLE */
+
