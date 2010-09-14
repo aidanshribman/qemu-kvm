@@ -1062,16 +1062,16 @@ Initate migration warmup phase to @var{uri} (using -d to not wait for completion
 ETEXI
 
     {
-        .name       = "migrate_full",
+        .name       = "migrate_warmup_end",
         .args_type  = "",
         .params     = "",
         .help       = "Switch from warmup phase to full live migration",
-        .mhandler.cmd = do_migrate_warmup_full,
+        .mhandler.cmd = do_migrate_warmup_end,
     },
 
 STEXI
-@item migrate_warmup [-d] @var{uri}
-Initate migration warmup phase to @var{uri} (using -d to not wait for completion).
+@item migrate_warmup_end
+Switch from warmup phase to full live migration.
 ETEXI
 
     {
@@ -1085,6 +1085,19 @@ ETEXI
 STEXI
 @item migrate_set_cachesize @var{value}
 Set cache size (in MB) for xbrle migrations.
+ETEXI
+
+    {
+        .name       = "migrate_set_compression",
+        .args_type  = "value:s",
+        .params     = "value",
+        .help       = "Set migration page compression to (none|xbrle)",
+        .mhandler.cmd = do_migrate_set_compression,
+    },
+
+STEXI
+@item migrate_set_compression @var{value}
+Set migration page compression to (none|xbrle).
 ETEXI
 
 #endif /* SAP_XBRLE */

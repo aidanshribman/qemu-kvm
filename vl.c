@@ -289,8 +289,9 @@ uint8_t qemu_uuid[16];
 
 #ifdef SAP_XBRLE
 #define DEFAULT_CACHE_SIZE 0xFFFF //16 MB cache
-
 #define CACHE_SET_SIZE 2
+
+static int is_mig_iterative = 0;
 
 typedef struct CacheObj {
 	ram_addr_t slot_addr[CACHE_SET_SIZE];
@@ -2991,10 +2992,10 @@ void init_cache_array(void)
 	int i;
 	CacheObj cO;
 
-	if (!migrationParameters.cacheSize)
-		cache_size = (migrationParameters.cacheSize/TARGET_PAGE_SIZE) -1;
+	if (mig_cache_size)
+	    cache_size = (mig_cache_size / TARGET_PAGE_SIZE) - 1;
 	else
-		cache_size = DEFAULT_CACHE_SIZE;
+	    cache_size = DEFAULT_CACHE_SIZE;
 
 	stderr_puts_timestamp("Setting cache size: ");
 	stderr_puti(cache_size);
@@ -3015,11 +3016,8 @@ void init_cache_array(void)
 	/* reset cache_weight */
 	cache_weight = 1;
 
-	/* XOR Delta */
 	deltaData = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
 	rleDeltaData = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
-
-	/* curr_page_data */
 	curr_page_data = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
 }
 
@@ -3161,7 +3159,7 @@ int rle_encodeBuffer(uint8_t *inBuffer, int inBufSize, uint8_t *outBuffer)
 	}
 
 	//shift in header bits
-	tmpEncoded[0] = COMPRESSION_DELTA_XBRLE; //set encoding type
+	tmpEncoded[0] = COMP_XBRLE;
 	tmpEncoded[1] = (outPtr & 0xFF00) >> 8;
 	tmpEncoded[2] = (outPtr & 0x00FF);
 
@@ -3255,8 +3253,7 @@ static int ram_save_delta_comp(QEMUFile *f, uint8_t *p, ram_addr_t *current_addr
     float changeCounter = 0.0;
     int i;
 
-    if (! migrationParameters.compressionEnabled 
-	    && migrationParameters.iterativeStage) {
+    if (!(mig_compression_type && is_mig_iterative)) {
 	normalPages++;
 	return -1;
     }
@@ -3270,14 +3267,17 @@ static int ram_save_delta_comp(QEMUFile *f, uint8_t *p, ram_addr_t *current_addr
     //page is cached!
     cacheLocation = asc_get_cache_pos(*current_addr);
 
-    if (migrationParameters.compressionType != COMPRESSION_DELTA_XBRLE) {
-	stderr_puts_timestamp("Warning: Compression is selected but the compression type is unknown!");
+    switch (mig_compression_type) {
+    case COMP_XBRLE:
+	break;
+    case COMP_NONE:
+	stderr_puts_timestamp("Warning: no compression defined!");
+	goto failed_comp;
+    default:
+	stderr_puts_timestamp("Warning: compression type is unknown!");
 	goto failed_comp;
     }
 
-    //XOR DELTA, RLE encoding
-    // stderr_puts_timestamp("COMPRESSION_DELTA_XBRLE");
-    //create XOR delta
     for (i = 0; i < TARGET_PAGE_SIZE; i++) {
 	deltaData[i] = curr_page_data[i] ^ ARC[cacheLocation].slot_data[slot][i];
 
@@ -3434,9 +3434,8 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
 
 #ifdef SAP_XBRLE
         //pesv LRU caching allocate memory for LRU/RLE cache
-        if (migrationParameters.compressionEnabled)
-		init_cache_array();
-        migrationParameters.iterativeStage = false; //pesv
+	init_cache_array();
+        is_mig_iterative = 0;
 #endif /* SAP_XBRLE */
 
         qemu_put_be64(f, last_ram_offset | RAM_SAVE_FLAG_MEM_SIZE);
@@ -3448,7 +3447,7 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
     starttime = get_clock(); //pesv migration downtime bug
 
     if (stage == 2)
-	    migrationParameters.iterativeStage = true; //pesv
+        is_mig_iterative = 1;
 #endif /* SAP_XBRLE */
 
     while (!qemu_file_rate_limit(f)) {
@@ -3481,8 +3480,7 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
     if (stage == 3)
     {
 #ifdef SAP_XBRLE
-	    migrationParameters.iterativeStage = false; //pesv
-	    //migrationParameters.compressionEnabled = false; //disable compression
+	is_mig_iterative = 0;
 #endif
 
         /* flush all remaining blocks regardless of rate limiting */
@@ -3491,14 +3489,12 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
         }
         cpu_physical_memory_set_dirty_tracking(0);
 #ifdef SAP_XBRLE
-        //free memory allocated for caching
-	if (migrationParameters.compressionEnabled)
-		free_cache_array();
+	free_cache_array();
 
-        //pesv benchmarking
+        /* benchmarking */
         transferredBytes = normalPages * TARGET_PAGE_SIZE + xbrleBytes;
 
-        stderr_puts_timestamp("RAM Transfer complete. Iterations: "); //pesv logging
+        stderr_puts_timestamp("RAM Transfer complete. Iterations: ");
         stderr_puti(iterations);
         stderr_puts("\nNo of uncompressed pages: ");
         stderr_puti(normalPages);
@@ -3506,7 +3502,7 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
         stderr_puti(transferredBytes);
         stderr_puts("\n");
 
-        if (migrationParameters.compressionEnabled) {
+        if (mig_compression_type) {
 	    stderr_puts("No of compressed pages: ");
 	    stderr_puti(xbrlePages);
 	    stderr_puts(", bytes: ");
@@ -3544,7 +3540,7 @@ static int ram_load_delta_comp(QEMUFile *f, ram_addr_t addr)
     //get compr method
     comprFlag = rle_getComprFlag(rleDelta);
 
-    if (! comprFlag & COMPRESSION_DELTA_XBRLE) {
+    if (! comprFlag & COMP_XBRLE) {
 	stderr_puts_timestamp("(ram_load): Error: bad/unknown compression flag! \n");
 	return -EINVAL;
     }
