@@ -288,10 +288,8 @@ static QEMUTimer *nographic_timer;
 uint8_t qemu_uuid[16];
 
 #ifdef SAP_XBRLE
-#define DEFAULT_CACHE_SIZE 0xFFFF //16 MB cache
+#define DEFAULT_CACHE_SIZE_PAGES 0x10000 /* 64k pages * 4 KB = 256 MB */
 #define CACHE_SET_SIZE 2
-
-static int is_mig_iterative = 0;
 
 typedef struct CacheObj {
 	ram_addr_t slot_addr[CACHE_SET_SIZE];
@@ -300,38 +298,37 @@ typedef struct CacheObj {
 } CacheObj;
 
 CacheObj *ARC;
-uint32_t cache_size = 0;
+int64_t cache_size_pages = 0;
 uint64_t cache_weight = 1;
 void init_cache_array(void);
 void free_cache_array(void);
-
 int asc_is_cached(ram_addr_t addr);
 int asc_get_oldest(CacheObj c);
 int asc_get_most_recent(CacheObj c, ram_addr_t addr);
 void asc_add_to_cache(ram_addr_t id, unsigned long weight, uint8_t *pdata);
-void asc_update_in_cache(unsigned long pos, unsigned long addr, unsigned long weight, uint8_t *pdata, int slot);
+void asc_update_in_cache(unsigned long pos, unsigned long addr,
+	unsigned long weight, uint8_t *pdata, int slot);
 unsigned long asc_get_cache_pos(ram_addr_t address);
 
-//XBRLE
-int rle_encodeBuffer(uint8_t *inBuffer, int inBufSize, uint8_t *outBuffer);
-int rle_decodeBuffer(uint8_t *inBuffer, int inBufSize, int decodedBufferSize, uint8_t *outBuffer);
-uint8_t *deltaData;
-uint8_t *rleDeltaData;
-uint8_t *rleDelta, *delta, *newPage;
-uint8_t *curr_page_data;
+/* XBRLE */
+typedef struct rle_hdr_t {
+    uint8_t rle_compress;
+    uint16_t rle_len;
+} rle_hdr_t;
 
-int rle_getBufferLength(uint8_t *inBuffer);
-uint8_t rle_getComprFlag(uint8_t *inBuffer);
-
+int rle_encode_buffer(uint8_t *src, int slen, uint8_t *dst, int dlen);
+int rle_decode_buffer(uint8_t *src, int slen, uint8_t *dst, int dlen);
+uint8_t *save_xor_buf, *save_xbrle_buf;
+uint8_t *load_xbrle_buf, *load_xor_buf, *new_page;
 void print_struct_array_with_data(uint8_t *array, size_t len);
 
-//benchmarking
-uint64_t normalPages;
-uint64_t xbrlePages;
-uint64_t abortedCompressionPages;
-uint64_t blankPages;
-uint64_t iterations;
-uint64_t xbrleBytes;
+/* benchmarking */
+uint64_t bench_normal_pages;
+uint64_t bench_xbrle_pages;
+uint64_t bench_aborted_compression_pages;
+uint64_t bench_dup_pages;
+uint64_t bench_iterations;
+uint64_t bench_xbrle_bytes;
 #endif /* SAP_XBRLE */
 
 static QEMUBootSetHandler *boot_set_handler;
@@ -2971,20 +2968,19 @@ void qemu_del_wait_object(HANDLE handle, WaitObjectFunc *func, void *opaque)
 #endif /* SAP_XBRLE */
 
 #ifdef SAP_XBRLE
-#define RLE_HEADER_SIZE 0x03
 
 void initXBRLEComprBuffers(void)
 {
-	rleDelta = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
-	delta = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
-	newPage = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
+	load_xbrle_buf = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
+	load_xor_buf = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
+	new_page = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
 }
 
 void freeXBRLEComprBuffers(void)
 {
-	qemu_free(rleDelta);
-	qemu_free(delta);
-	qemu_free(newPage);
+	qemu_free(load_xbrle_buf);
+	qemu_free(load_xor_buf);
+	qemu_free(new_page);
 }
 
 void init_cache_array(void)
@@ -2993,17 +2989,17 @@ void init_cache_array(void)
 	CacheObj cO;
 
 	if (mig_cache_size)
-	    cache_size = (mig_cache_size / TARGET_PAGE_SIZE) - 1;
+	    cache_size_pages = (mig_cache_size / TARGET_PAGE_SIZE);
 	else
-	    cache_size = DEFAULT_CACHE_SIZE;
+	    cache_size_pages = DEFAULT_CACHE_SIZE_PAGES;
 
 	stderr_puts_timestamp("Setting cache size: ");
-	stderr_puti(cache_size);
+	stderr_puti(cache_size_pages);
 	stderr_puts(" pages\n");
 
-	ARC = (CacheObj*)qemu_mallocz((cache_size+1)* sizeof(CacheObj));
+	ARC = (CacheObj*)qemu_mallocz((cache_size_pages)* sizeof(CacheObj));
 
-	for (i=0;i<(cache_size+1);i++) {
+	for (i=0;i<cache_size_pages;i++) {
 	    int j;
 	    for (j = 0; j < CACHE_SET_SIZE; j++) {
 		cO.slot_data[j] = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
@@ -3016,16 +3012,15 @@ void init_cache_array(void)
 	/* reset cache_weight */
 	cache_weight = 1;
 
-	deltaData = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
-	rleDeltaData = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
-	curr_page_data = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
+	save_xor_buf = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
+	save_xbrle_buf = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
 }
 
 void free_cache_array(void)
 {
 	int i;
 
-	for (i=0;i<cache_size;i++) {
+	for (i=0;i<cache_size_pages;i++) {
 	    int j;
 	    for (j = 0; j < CACHE_SET_SIZE; j++) {
 		qemu_free(ARC[i].slot_data[j]);
@@ -3034,14 +3029,13 @@ void free_cache_array(void)
 	}
 
 	//free memory for XOR Delta
-	qemu_free(deltaData);
-	qemu_free(rleDeltaData);
-	qemu_free(curr_page_data);
+	qemu_free(save_xor_buf);
+	qemu_free(save_xbrle_buf);
 }
 
 unsigned long asc_get_cache_pos(ram_addr_t address)
 {
-	unsigned long position = ((address/TARGET_PAGE_SIZE) & cache_size);
+	unsigned long position = ((address/TARGET_PAGE_SIZE) & cache_size_pages);
 	return position;
 }
 
@@ -3108,125 +3102,86 @@ void print_struct_array_with_data(uint8_t *array, size_t len)
 	puts("--");
 }
 
-int rle_encodeBuffer(uint8_t *inBuffer, int inBufSize, uint8_t *outBuffer)
+int rle_encode_buffer(uint8_t *src, int slen, uint8_t *dst, int dlen)
 {
-	uint8_t MAX_RUNLENGTH = 255;
-	uint8_t *tmpEncoded;
+	rle_hdr_t *hdr;
+	uint8_t ch;
+	int s = 0, d = 0, run_len, prev = -1;
 
-	int EOB = -2;
+	hdr = (rle_hdr_t *) dst;
+	d += sizeof (*hdr);
 
-	int currByte;
-	int lastByte = -1;
+	while (s < slen) {
+		ch = src[s++];
 
-	int inPtr = 0;
-	int outPtr = RLE_HEADER_SIZE;
-	int runLength = -1;
-	int maxrunlength = 0;
-
-	tmpEncoded = outBuffer;
-
-	while (inPtr < inBufSize) {
-		currByte = inBuffer[inPtr++];
-
-		if (outPtr >= inBufSize)
+		if (d >= dlen)
 			return -1;
+		dst[d++] = ch;
 
-		tmpEncoded[outPtr++] = currByte;
-
-		while ((currByte == lastByte)&&(runLength < MAX_RUNLENGTH)) {
-			if (inPtr < inBufSize)
-				currByte = inBuffer[inPtr++];
-			else
-				lastByte = EOB;
-			runLength++;
-		}
-
-		if (runLength > -1) {
-			if (outPtr >= inBufSize)
-				return -1;
-			tmpEncoded[outPtr++] = runLength;
-
-			if (lastByte != EOB) {
-				if (outPtr >= inBufSize)
-					return -1;
-				tmpEncoded[outPtr++] = currByte;
-			}
-		}
-
-		lastByte = currByte;
-		runLength = -1;
-		maxrunlength = 0;
-	}
-
-	//shift in header bits
-	tmpEncoded[0] = COMP_XBRLE;
-	tmpEncoded[1] = (outPtr & 0xFF00) >> 8;
-	tmpEncoded[2] = (outPtr & 0x00FF);
-
-	return outPtr;
-}
-
-int rle_decodeBuffer(uint8_t *inBuffer, int inBufSize, int decodedBufferSize,
-		uint8_t *outBuffer)
-{
-	uint8_t currByte = 0x00;
-	int lastByte = -1;
-	uint8_t *tmpEncoded;
-
-	int i = 0;
-	int runLength = 0;
-
-	int inPtr = 0;
-	int outPtr = 0;
-
-	tmpEncoded = outBuffer;
-
-	lastByte = -1;
-
-	while (1) {
-		if (inPtr >= inBufSize)
+		/* count how long is the identical char run */
+		for (run_len = 0; run_len < 0xff; run_len++) {
+		    if (ch != prev)
 			break;
-
-		currByte = inBuffer[inPtr++];
-
-		if (outPtr >= decodedBufferSize) {
-			stderr_puts_timestamp("RLE Decode input buffer overrun!");
-			return -1;
+		    if (s >= slen)
+			break;
+		    ch = src[s++];
 		}
+		prev = ch;
 
-		tmpEncoded[outPtr++] = currByte;
+		if (!run_len)
+		    continue;
 
-		if (currByte != lastByte) {
-			lastByte = currByte;
-			continue;
-		}
+		if (d+1 >= dlen) /* we need to reserve 2 bytes */
+		    return -1;
 
-		runLength = inBuffer[inPtr++];
-		for (i = 0;i < runLength; i++) {
-			if (outPtr <= decodedBufferSize) {
-				tmpEncoded[outPtr++] = currByte;
-			}
-			else {
-				//output buffer overrun!
-				stderr_puts_timestamp("RLE Decode input buffer overrun!");
-				return -1;
-			}
-		}
-		lastByte = -1;
+		dst[d++] = ch;
+		dst[d++] = run_len;
 	}
 
-	//return buffer length
-	return outPtr;
+	/* update header */
+	hdr->rle_compress = COMP_XBRLE;
+	hdr->rle_len = d;
+	return d;
 }
 
-int rle_getBufferLength(uint8_t *inBuffer)
+int rle_decode_buffer(uint8_t *src, int slen, uint8_t *dst, int dlen)
 {
-	return (inBuffer[1] << 8) +  inBuffer[2];
-}
+    int prev = -1, s = 0, d = 0;
 
-uint8_t rle_getComprFlag(uint8_t *inBuffer)
-{
-	return inBuffer[0];
+    while (1) {
+	uint8_t ch;
+	int i, ch_num;
+
+	if (s >= slen)
+	    break;
+	ch = src[s++];
+
+	if (d >= dlen)
+	    goto failed_overrun;
+	dst[d++] = ch;
+
+	if (ch != prev) {
+	    prev = ch;
+	    continue;
+	}
+
+	/* two chars one after another indicates that there are multiple
+	 * occurances of the same char - in this case the number of instances
+	 * will appear after the duplication */
+	ch_num = src[s++];
+	for (i = 0; i < ch_num; i++) {
+	    if (d > dlen)
+		goto failed_overrun;
+	    dst[d++] = ch;
+	}
+
+	prev = -1;
+    }
+    return d;
+
+failed_overrun:
+    stderr_puts_timestamp("RLE Decode input buffer overrun!");
+    return -1;
 }
 #endif /* SAP_XBRLE */
 
@@ -3245,85 +3200,72 @@ static int is_dup_page(uint8_t *page, uint8_t ch)
 }
 
 #ifdef SAP_XBRLE
-static int ram_save_delta_comp(QEMUFile *f, uint8_t *p, ram_addr_t *current_addr)
+static int do_delta_compress(QEMUFile *f, uint8_t *p, ram_addr_t *current_addr)
 {
-    int cacheLocation = -1;
-    int slot = -1;
-    int encodedLength = 0;
-    float changeCounter = 0.0;
-    int i;
+    int cache_location = -1, slot = -1, encoded_len = 0, i;
+    int num_bytes_changed = 0;
+    int ret = 0;
 
-    if (!(mig_compression_type && is_mig_iterative)) {
-	normalPages++;
-	return -1;
-    }
-
-    //store snapshot of page
-    memcpy(curr_page_data, p, TARGET_PAGE_SIZE);
-
-    if ((slot = asc_is_cached(*current_addr)) == -1)
-	goto failed_comp;
-
-    //page is cached!
-    cacheLocation = asc_get_cache_pos(*current_addr);
-
+    /* handle compression type */
     switch (mig_compression_type) {
     case COMP_XBRLE:
 	break;
     case COMP_NONE:
-	stderr_puts_timestamp("Warning: no compression defined!");
-	goto failed_comp;
+	goto failed;
     default:
 	stderr_puts_timestamp("Warning: compression type is unknown!");
-	goto failed_comp;
+	goto failed;
     }
 
+    /* get location */
+    if ((slot = asc_is_cached(*current_addr)) == -1) {
+	goto failed;
+    }
+    cache_location = asc_get_cache_pos(*current_addr);
+
+    /* abort if page changed too much */
+    /* XXX: we can randomilly sample several bytes instead */
     for (i = 0; i < TARGET_PAGE_SIZE; i++) {
-	deltaData[i] = curr_page_data[i] ^ ARC[cacheLocation].slot_data[slot][i];
+	save_xor_buf[i] = p[i] ^ ARC[cache_location].slot_data[slot][i];
 
-	if (deltaData[i])
-	    changeCounter++;
+	if (save_xor_buf[i])
+	    num_bytes_changed++;
 
-	/* FIXME: do not understand this line */
-	if (i == TARGET_PAGE_SIZE * 0.375) {
-	    //printf ("Checking rate of change!%f \n",(changeCounter/i));
-	    if ((changeCounter/i) > 0.3) {
-		// stderr_puts_timestamp("Page has changed too much! Aborting delta.\n");
-		abortedCompressionPages++;
-		goto failed_comp;
-	    }
-	}
+	if (num_bytes_changed < TARGET_PAGE_SIZE * 0.3) /* 30% changed */
+	    continue;
+
+	stderr_puts_timestamp("Page changed too much! Aborting delta.\n");
+	bench_aborted_compression_pages++;
+	goto failed;
     }
 
-    //RLE encode delta
-    encodedLength = rle_encodeBuffer(deltaData, TARGET_PAGE_SIZE, rleDeltaData);
+    /* RLE encode delta */
+    encoded_len = rle_encode_buffer(save_xor_buf, TARGET_PAGE_SIZE, 
+	save_xbrle_buf, TARGET_PAGE_SIZE);
 
-    if (encodedLength == -1) {
-	//RLE compression was not successful, reset the sendCompressed flag
-	stderr_puts_timestamp("Warning: RLE compression was not successful, resetting the sendCompressed flag!");
-	goto failed_comp;
+    if (encoded_len < 0) {
+	stderr_puts_timestamp("Failed compression - sending uncompressed\n");
+	goto failed;
     }
 
-    //Send RLE-compressed page
-    stderr_puts_timestamp("Send compressed page\n");
-    xbrlePages++;
-    xbrleBytes += encodedLength;
+    /* Send RLE compressed page */
     qemu_put_be64(f, *current_addr | RAM_SAVE_FLAG_DELTA_COMPRESS);
-    qemu_put_buffer(f, rleDeltaData, encodedLength);
+    qemu_put_buffer(f, save_xbrle_buf, encoded_len);
+    stderr_puts_timestamp("Sent compressed page\n");
+    bench_xbrle_pages++;
+    bench_xbrle_bytes += encoded_len;
     goto done;
-failed_comp:
-    stderr_puts_timestamp("Page failed compression - sending uncompressed\n");
-    normalPages++;
-    qemu_put_be64(f, *current_addr | RAM_SAVE_FLAG_PAGE);
-    qemu_put_buffer(f, curr_page_data, TARGET_PAGE_SIZE);
+
+failed:
+    ret = -1;
+
 done:
-    //update ARC cache
-    asc_add_to_cache(*current_addr, cache_weight++, curr_page_data);
-    return 0;
+    asc_add_to_cache(*current_addr, cache_weight++, p);
+    return ret;
 }
 #endif /* SAP_XBRLE */
 
-static int ram_save_block(QEMUFile *f)
+static int ram_save_block(QEMUFile *f, int stage)
 {
     static ram_addr_t current_addr = 0;
     ram_addr_t saved_addr = current_addr;
@@ -3353,16 +3295,15 @@ static int ram_save_block(QEMUFile *f)
 		    qemu_put_be64(f, current_addr | RAM_SAVE_FLAG_COMPRESS);
 		    qemu_put_byte(f, *p);
 #ifdef SAP_XBRLE
-		    blankPages++;
+		    bench_dup_pages++;
+	    } else if (stage == 2 && !do_delta_compress(f, p, &current_addr)) {
 #endif /* SAP_XBRLE */
             } else {
+		    qemu_put_be64(f, current_addr | RAM_SAVE_FLAG_PAGE);
+		    qemu_put_buffer(f, p, TARGET_PAGE_SIZE);
 #ifdef SAP_XBRLE
-		    if (ram_save_delta_comp(f, p, &current_addr) < 0)
+		    bench_normal_pages++;
 #endif /* SAP_XBRLE */
-		    do {
-			qemu_put_be64(f, current_addr | RAM_SAVE_FLAG_PAGE);
-			qemu_put_buffer(f, p, TARGET_PAGE_SIZE);
-		    } while (0);
             }
 
             found = 1;
@@ -3405,6 +3346,37 @@ uint64_t ram_bytes_total(void)
     return last_ram_offset;
 }
 
+#ifdef SAP_XBRLE
+static void stderr_bench_report(void) 
+{
+    double trans_bytes = bench_normal_pages * TARGET_PAGE_SIZE 
+	+ bench_xbrle_bytes;
+
+    stderr_puts_timestamp("RAM Transfer complete. Iterations: ");
+    stderr_puti(bench_iterations);
+    stderr_puts("\nNo of uncompressed pages: ");
+    stderr_puti(bench_normal_pages);
+    stderr_puts(", bytes: ");
+    stderr_puti(trans_bytes);
+    stderr_puts("\n");
+
+    if (!mig_compression_type)
+	return;
+
+    stderr_puts("No of compressed pages: ");
+    stderr_puti(bench_xbrle_pages);
+    stderr_puts(", bytes: ");
+    stderr_puti(bench_xbrle_bytes);
+    stderr_puts("\nNo of aborted compression pages: ");
+    stderr_puti(bench_aborted_compression_pages);
+    stderr_puts("\nNo of (byte) duplicate pages: ");
+    stderr_puti(bench_dup_pages);
+    stderr_puts("\nCache Weight max value: ");
+    stderr_puti(cache_weight);
+    stderr_puts("\n");
+}
+#endif /* SAP_XBRLE */
+
 static int ram_save_live(QEMUFile *f, int stage, void *opaque)
 {
     ram_addr_t addr;
@@ -3412,8 +3384,7 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
     double bwidth = 0;
     uint64_t expected_time = 0;
 #ifdef SAP_XBRLE
-    double transferredBytes; //pesv benchmarking
-    static int64_t starttime = 0; //pesv migration downtime bug patch
+    static int64_t starttime; //pesv migration downtime bug patch
     double timediff;  //pesv migration downtime bug patch
 #endif /* SAP_XBRLE */
 
@@ -3435,7 +3406,6 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
 #ifdef SAP_XBRLE
         //pesv LRU caching allocate memory for LRU/RLE cache
 	init_cache_array();
-        is_mig_iterative = 0;
 #endif /* SAP_XBRLE */
 
         qemu_put_be64(f, last_ram_offset | RAM_SAVE_FLAG_MEM_SIZE);
@@ -3445,19 +3415,16 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
     bwidth = get_clock();
 #ifdef SAP_XBRLE
     starttime = get_clock(); //pesv migration downtime bug
-
-    if (stage == 2)
-        is_mig_iterative = 1;
 #endif /* SAP_XBRLE */
 
     while (!qemu_file_rate_limit(f)) {
 	int ret;
 
 #ifdef SAP_XBRLE
-	iterations++; //pesv benchmarking
+	bench_iterations++;
 #endif /* SAP_XBRLE */
 
-	ret = ram_save_block(f);
+	ret = ram_save_block(f, stage);
 	bytes_transferred += ret * TARGET_PAGE_SIZE;
 	if (ret == 0) /* no more blocks */
 	    break;
@@ -3466,8 +3433,9 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
     bwidth = get_clock() - bwidth;
     bwidth = (bytes_transferred - bytes_transferred_last) / bwidth;
 #ifdef SAP_XBRLE
-    timediff = get_clock() - starttime; //pesv migration downtime bug
-    bwidth = bytes_transferred / timediff; //pesv migration downtime bug
+    /* FIXME: this is a bug */
+    timediff = get_clock() - starttime;
+    bwidth = bytes_transferred / timediff;
 #endif /* SAP_XBRLE */
 
     /* if we haven't transferred anything this round, force expected_time to a
@@ -3479,42 +3447,14 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
 
     if (stage == 3)
     {
-#ifdef SAP_XBRLE
-	is_mig_iterative = 0;
-#endif
-
         /* flush all remaining blocks regardless of rate limiting */
-        while (ram_save_block(f) != 0) {
+        while (ram_save_block(f, stage) != 0) {
             bytes_transferred += TARGET_PAGE_SIZE;
         }
         cpu_physical_memory_set_dirty_tracking(0);
 #ifdef SAP_XBRLE
 	free_cache_array();
-
-        /* benchmarking */
-        transferredBytes = normalPages * TARGET_PAGE_SIZE + xbrleBytes;
-
-        stderr_puts_timestamp("RAM Transfer complete. Iterations: ");
-        stderr_puti(iterations);
-        stderr_puts("\nNo of uncompressed pages: ");
-        stderr_puti(normalPages);
-        stderr_puts(", bytes: ");
-        stderr_puti(transferredBytes);
-        stderr_puts("\n");
-
-        if (mig_compression_type) {
-	    stderr_puts("No of compressed pages: ");
-	    stderr_puti(xbrlePages);
-	    stderr_puts(", bytes: ");
-	    stderr_puti(xbrleBytes);
-	    stderr_puts("\nNo of aborted compression pages: ");
-	    stderr_puti(abortedCompressionPages);
-	    stderr_puts("\nNo of blank pages: ");
-	    stderr_puti(blankPages);
-	    stderr_puts("\nCacheWeight max value: ");
-	    stderr_puti(cache_weight);
-	    stderr_puts("\n");
-        }
+	stderr_bench_report();
 #endif /* SAP_XBRLE */
     }
 
@@ -3526,50 +3466,38 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
 }
 
 #ifdef SAP_XBRLE
-static int ram_load_delta_comp(QEMUFile *f, ram_addr_t addr)
+static int load_delta_comp(QEMUFile *f, ram_addr_t addr)
 {
-    int size, ret, i, comprFlag, comprCtr=0;
-    uint8_t *oldPage;
+    int size, ret, i;
+    uint8_t *old_page;
+    rle_hdr_t hdr;
 
-    //read header from qemu file
-    qemu_get_buffer(f, rleDelta, RLE_HEADER_SIZE);
+    /* extract RLE header */
+    qemu_get_buffer(f, (uint8_t *) &hdr, sizeof(hdr));
+    if (! hdr.rle_compress & COMP_XBRLE) {
+	stderr_puts_timestamp("Error: bad/unknown compression flag!\n");
+	return -1;
+    }
+    size = hdr.rle_len - sizeof(hdr);
 
-    //get old buffer ptr
-    oldPage = qemu_get_ram_ptr(addr);
+    /* load data and decode */
+    qemu_get_buffer(f, load_xbrle_buf, size);
 
-    //get compr method
-    comprFlag = rle_getComprFlag(rleDelta);
-
-    if (! comprFlag & COMP_XBRLE) {
-	stderr_puts_timestamp("(ram_load): Error: bad/unknown compression flag! \n");
-	return -EINVAL;
+    /* decode RLE */
+    ret = rle_decode_buffer(load_xbrle_buf, size, load_xor_buf, 
+	    TARGET_PAGE_SIZE);
+    if (ret == -1 || ret != TARGET_PAGE_SIZE) {
+	stderr_puts_timestamp("Error: in RLE decoding!\n");
+	return -1;
     }
 
-    comprCtr++;
-    size = rle_getBufferLength(rleDelta)-RLE_HEADER_SIZE;
-
-    //read buffer from qemu file
-    qemu_get_buffer(f, rleDelta, size);
-
-    //RLE inflate delta
-    ret = rle_decodeBuffer(rleDelta, size, TARGET_PAGE_SIZE, delta);
-
-    if (ret == -1) {
-	stderr_puts_timestamp("(ram_load): Error: error RLE decoding data! \n");
-	return -EINVAL;
-    }
-
-    if (ret != TARGET_PAGE_SIZE) {
-	stderr_puts_timestamp("(ram_load): Error: bad RLE decode length flag! \n");
-	return -EINVAL;
-    }
-
-    //recreate buffer
+    /* decode XOR delta */
+    old_page = qemu_get_ram_ptr(addr);
     for (i = 0; i < TARGET_PAGE_SIZE; i++)
-	newPage[i] = delta[i] ^ oldPage[i];
+	new_page[i] = load_xor_buf[i] ^ old_page[i];
 
-    //set ram
-    memcpy(oldPage, newPage, TARGET_PAGE_SIZE);
+    /* restore original page content */
+    memcpy(old_page, new_page, TARGET_PAGE_SIZE);
     return 0;
 }
 #endif /* SAP_XBRLE */
@@ -3607,9 +3535,8 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
         }
 #ifdef SAP_XBRLE
 	else if (flags & RAM_SAVE_FLAG_DELTA_COMPRESS) {
-	    int ret = ram_load_delta_comp(f, addr);
-	    if (ret < 0)
-		return ret;
+	    if (load_delta_comp(f, addr) < 0)
+		return -EINVAL;
 	}
 #endif /* SAP_XBRLE */
     } while (!(flags & RAM_SAVE_FLAG_EOS));
