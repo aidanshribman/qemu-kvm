@@ -38,6 +38,8 @@ typedef struct QEMUFileBuffered
     QEMUTimer *timer;
 } QEMUFileBuffered;
 
+#define DEBUG_BUFFERED_FILE
+
 #ifdef DEBUG_BUFFERED_FILE
 #define dprintf(fmt, ...) \
     do { printf("buffered-file: " fmt, ## __VA_ARGS__); } while (0)

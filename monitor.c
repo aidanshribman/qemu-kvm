@@ -124,9 +124,7 @@ static void monitor_command_cb(Monitor *mon, const char *cmdline,
 static void monitor_read_command(Monitor *mon, int show_prompt)
 {
     readline_start(mon->rs, "(qemu-dlx) ", 0, monitor_command_cb, NULL);
-#ifdef SAP_XBRLE
-    stderr_puts_timestamp("Starting qemu-kvm\n");
-#endif
+
     if (show_prompt)
         readline_show_prompt(mon->rs);
 }
