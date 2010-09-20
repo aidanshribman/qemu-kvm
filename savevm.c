@@ -1434,8 +1434,6 @@ void do_savevm(Monitor *mon, const QDict *qdict) {
 #endif
 	const char *name = qdict_get_try_str(qdict, "name");
 
-	//stderr_puts_timestamp("(do_savevm): Saving vm state\n"); //pesv logging
-
 	bs = get_bs_snapshots();
 	if (!bs) {
 		monitor_printf(mon, "No block device can accept snapshots\n");
@@ -1524,8 +1522,6 @@ int load_vmstate(Monitor *mon, const char *name) {
 	QEMUFile *f;
 	int ret;
 
-	//stderr_puts_timestamp("(load_vmstate): Loading vm state\n"); //pesv logging
-
 	bs = get_bs_snapshots();
 	if (!bs) {
 		monitor_printf(mon, "No block device supports snapshots\n");
@@ -1556,7 +1552,6 @@ int load_vmstate(Monitor *mon, const char *name) {
 					default:
 					monitor_printf(mon, "Error %d while activating snapshot on"
 							" '%s'\n", ret, bdrv_get_device_name(bs1));
-					//stderr_puts_timestamp("Error while activating snapshot\n"); //pesv logging
 					break;
 				}
 				/* fatal on snapshot block device */

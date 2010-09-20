@@ -22,7 +22,7 @@
 #include <time.h>
 #endif /* SAP_XBRLE */
 
-//#define DEBUG_MIGRATION_TCP
+#define DEBUG_MIGRATION_TCP
 
 #ifdef DEBUG_MIGRATION_TCP
 #define dprintf(fmt, ...) \
