@@ -314,29 +314,29 @@ typedef struct cache_bucket_t {
 } cache_bucket_t;
 
 static cache_bucket_t *page_cache;
-
 static int64_t cache_num_buckets = 0;
 static uint64_t cache_max_item_age = 1;
-void cache_init(int64_t num_buckets);
-void cache_fini(void);
-int cache_is_cached(ram_addr_t addr);
-int cache_get_oldest(cache_bucket_t *buck);
-int cache_get_newest(cache_bucket_t *buck, ram_addr_t addr);
-void cache_add(ram_addr_t id, unsigned long age, uint8_t *pdata);
-void cache_update(unsigned long pos, unsigned long addr, unsigned long age,
-	uint8_t *pdata, int slot);
-unsigned long cache_get_cache_pos(ram_addr_t address);
-cache_item_t *cache_item_get(unsigned long pos, int item);
+
+static void cache_init(int64_t num_buckets);
+static void cache_fini(void);
+static int cache_is_cached(ram_addr_t addr);
+static int cache_get_oldest(cache_bucket_t *buck);
+static int cache_get_newest(cache_bucket_t *buck, ram_addr_t addr);
+static void cache_add(ram_addr_t id, unsigned long age, uint8_t *pdata);
+static void cache_update(unsigned long pos, unsigned long addr, unsigned long
+	age, uint8_t *pdata, int slot);
+static unsigned long cache_get_cache_pos(ram_addr_t address);
+static cache_item_t *cache_item_get(unsigned long pos, int item);
 
 /***********************************************************/
-/* RLE (Run-Length Encoding */
+/* RLE (Run-Length Encoding) */
 typedef struct rle_hdr_t {
     uint8_t rle_compress;
     uint16_t rle_len;
 } rle_hdr_t;
 
-int rle_encode(uint8_t *src, int slen, uint8_t *dst);
-int rle_decode(uint8_t *src, int slen, uint8_t *dst);
+static int rle_encode(uint8_t *src, int slen, uint8_t *dst);
+static int rle_decode(uint8_t *src, int slen, uint8_t *dst);
 
 /***********************************************************/
 /* Pages for encoding/decoding XBRLE during load/save */
