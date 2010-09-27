@@ -301,10 +301,14 @@ uint8_t qemu_uuid[16];
 
 #define CACHE_N_WAY 2 /* 2-way assossiative cache */
 
+typedef struct cache_item_t {
+	ram_addr_t it_addr;
+	unsigned long it_age;
+	uint8_t *it_data;
+} cache_item_t;
+
 typedef struct cache_bucket_t {
-	ram_addr_t item_addr[CACHE_N_WAY];
-	unsigned long item_age[CACHE_N_WAY];
-	uint8_t *item_data[CACHE_N_WAY];
+    	cache_item_t bkt_item[CACHE_N_WAY];
 } cache_bucket_t;
 
 static cache_bucket_t *page_cache;
@@ -316,9 +320,9 @@ void cache_fini(void);
 int cache_is_cached(ram_addr_t addr);
 int cache_get_oldest(cache_bucket_t *buck);
 int cache_get_most_recent(cache_bucket_t *buck, ram_addr_t addr);
-void cache_add_to_cache(ram_addr_t id, unsigned long weight, uint8_t *pdata);
+void cache_add_to_cache(ram_addr_t id, unsigned long age, uint8_t *pdata);
 void cache_update_in_cache(unsigned long pos, unsigned long addr,
-	unsigned long weight, uint8_t *pdata, int slot);
+	unsigned long age, uint8_t *pdata, int slot);
 unsigned long cache_get_cache_pos(ram_addr_t address);
 
 typedef struct rle_hdr_t {
@@ -361,7 +365,7 @@ static void load_xbrle_free(void)
 static uint64_t bytes_transferred = 0;
 uint64_t bench_normal_pages;
 uint64_t bench_xbrle_pages;
-uint64_t bench_aborted_compression_pages;
+uint64_t bench_xbrle_pages_aborted;
 uint64_t bench_dup_pages;
 uint64_t bench_iterations;
 uint64_t bench_xbrle_bytes;
@@ -3011,6 +3015,14 @@ static int get_num_buckets_in_cache(void)
     return buckets;
 }
 
+extern cache_item_t *cache_item_get(unsigned long pos, int item);
+
+cache_item_t *cache_item_get(unsigned long pos, int item)
+{
+    assert(page_cache);
+    return &page_cache[pos].bkt_item[item];
+}
+
 void cache_init(int64_t num_buckets)
 {
     int i;
@@ -3026,10 +3038,10 @@ void cache_init(int64_t num_buckets)
     for (i=0;i<cache_num_buckets;i++) {
 	int j;
 	for (j = 0; j < CACHE_N_WAY; j++) {
-	    page_cache[i].item_data[j] = (uint8_t*) 
-		qemu_mallocz(TARGET_PAGE_SIZE);
-	    page_cache[i].item_age[j] = 0;
-	    page_cache[i].item_addr[j] = -1;
+	    cache_item_t *it = cache_item_get(i, j);
+	    it->it_data = (uint8_t*) qemu_mallocz(TARGET_PAGE_SIZE);
+	    it->it_age = 0;
+	    it->it_addr = -1;
 	}
     }
 
@@ -3046,8 +3058,9 @@ void cache_fini(void)
     for (i=0;i<cache_num_buckets;i++) {
 	int j;
 	for (j = 0; j < CACHE_N_WAY; j++) {
-	    qemu_free(page_cache[i].item_data[j]);
-	    page_cache[i].item_data[j] = 0;
+	    cache_item_t *it = cache_item_get(i, j);
+	    qemu_free(it->it_data);
+	    it->it_data = 0;
 	}
     }
 
@@ -3073,11 +3086,13 @@ int cache_get_most_recent(cache_bucket_t *buck, ram_addr_t addr)
     assert(page_cache);
 
     for (j = 0; j < CACHE_N_WAY; j++) {
-	if (buck->item_addr[j] != addr)
+	cache_item_t *it = &buck->bkt_item[j];
+
+	if (it->it_addr != addr)
 	    continue;
 
-	if (!j || buck->item_age[j] > big) {
-	    big = buck->item_age[j];
+	if (!j || it->it_age > big) {
+	    big = it->it_age;
 	    big_pos = j;
 	}
     }
@@ -3094,8 +3109,10 @@ int cache_get_oldest(cache_bucket_t *buck)
     assert(page_cache);
 
     for (j = 0; j < CACHE_N_WAY; j++) {
-	if (!j || buck->item_age[j] <  small) {
-	    small = buck->item_age[j];
+	cache_item_t *it = &buck->bkt_item[j];
+
+	if (!j || it->it_age <  small) {
+	    small = it->it_age;
 	    small_pos = j;
 	}
     }
@@ -3112,17 +3129,17 @@ int cache_is_cached(ram_addr_t addr)
     return cache_get_most_recent(bucket, addr);
 }
 
-void cache_update_in_cache(unsigned long pos, ram_addr_t addr, uint64_t weight,
+void cache_update_in_cache(unsigned long pos, ram_addr_t addr, uint64_t age,
 		uint8_t *pdata, int slot) 
 {
-    assert(page_cache);
-    assert(page_cache[pos].item_data[slot]);
-    memcpy(page_cache[pos].item_data[slot], pdata, TARGET_PAGE_SIZE);
-    page_cache[pos].item_age[slot] = weight;
-    page_cache[pos].item_addr[slot] = addr;
+    cache_item_t *it = cache_item_get(pos, slot);
+    assert(it->it_data);
+    memcpy(it->it_data, pdata, TARGET_PAGE_SIZE);
+    it->it_age = age;
+    it->it_addr = addr;
 }
 
-void cache_add_to_cache(unsigned long addr, uint64_t weight, uint8_t *pdata)
+void cache_add_to_cache(unsigned long addr, uint64_t age, uint8_t *pdata)
 {
     unsigned long pos;
     int slot = -1;
@@ -3133,7 +3150,7 @@ void cache_add_to_cache(unsigned long addr, uint64_t weight, uint8_t *pdata)
     bucket = &page_cache[pos];
 
     slot = cache_get_oldest(bucket); /* evict LRU */
-    cache_update_in_cache(pos, addr, weight, pdata, slot);
+    cache_update_in_cache(pos, addr, age, pdata, slot);
 }
 
 #if 0
@@ -3256,12 +3273,39 @@ static int is_dup_page(uint8_t *page, uint8_t ch)
     return 1;
 }
 
+#define PAGE_SAMPLE_PERCENT 0.01
+#define PAGE_SAMPLE_SIZE (TARGET_PAGE_SIZE * PAGE_SAMPLE_PERCENT)
+
+static int is_page_good_for_xbrle(uint8_t *old, uint8_t *new)
+{
+    int i, bytes_changed = 0;
+
+    srand(time(NULL)+getpid()+getpid()*987654+rand());
+
+    for (i = 0; i < PAGE_SAMPLE_SIZE; i++) {
+	unsigned long pos = (int) (rand() * TARGET_PAGE_SIZE / (RAND_MAX+1.0));
+
+	 if (old[pos] != new[pos])
+	     bytes_changed++;
+    }
+
+    return (((float) bytes_changed) / PAGE_SAMPLE_SIZE) < 0.30;
+}
+
+static void xor_encode(uint8_t *dst, uint8_t *src1, uint8_t *src2)
+{
+    int i;
+
+    for (i = 0; i < TARGET_PAGE_SIZE; i++)
+	dst[i] = src1[i] ^ src2[i];
+}
+
 static int save_xbrle_page(QEMUFile *f, uint8_t *p, ram_addr_t current_addr)
 {
-    int cache_location = -1, slot = -1, encoded_len = 0, i;
-    int num_bytes_changed = 0;
+    int cache_location = -1, slot = -1, encoded_len = 0;
     int ret = 0;
     rle_hdr_t hdr;
+    cache_item_t *it;
 
     /* handle compression type */
     switch (mig_compression_type) {
@@ -3281,23 +3325,16 @@ static int save_xbrle_page(QEMUFile *f, uint8_t *p, ram_addr_t current_addr)
     cache_location = cache_get_cache_pos(current_addr);
 
     /* abort if page changed too much */
-    /* XXX: we can randomilly sample several bytes instead */
-    assert(page_cache[cache_location].item_data[slot]);
-    for (i = 0; i < TARGET_PAGE_SIZE; i++) {
-	save_xor_buf[i] = p[i] ^ page_cache[cache_location].item_data[slot][i];
-
-	if (save_xor_buf[i])
-	    num_bytes_changed++;
-
-	if (num_bytes_changed < TARGET_PAGE_SIZE * 0.3) /* 30% changed */
-	    continue;
-
+    it = cache_item_get(cache_location, slot);
+    if (!is_page_good_for_xbrle(it->it_data, p)) {
 	dprintf("Page changed too much! Aborting XBRLE.\n");
-	bench_aborted_compression_pages++;
+	bench_xbrle_pages_aborted++;
 	goto failed;
     }
 
-    /* RLE encode delta */
+
+    /* XBRLE (XOR+RLE) delta encoding */
+    xor_encode(save_xor_buf, it->it_data, p);
     encoded_len = rle_encode(save_xor_buf, TARGET_PAGE_SIZE, 
 	save_xbrle_buf, TARGET_PAGE_SIZE);
     
@@ -3338,7 +3375,8 @@ static int ram_save_block(QEMUFile *f, int stage)
             int r;
             r = kvm_update_dirty_pages_log();
             if (r) {
-                fprintf(stderr, "%s: update dirty pages log failed %d\n", __FUNCTION__, r);
+                fprintf(stderr, "%s: update dirty pages log failed %d\n", 
+			__FUNCTION__, r);
                 qemu_file_set_error(f);
                 return 0;
             }
@@ -3402,24 +3440,41 @@ uint64_t ram_bytes_total(void)
     return last_ram_offset;
 }
 
+static void dump_percentage(const char *label, unsigned long absolute, 
+	unsigned long total )
+{
+    double percent = 100.0 * absolute / total;
+
+    dprintf("%s: %ld (%0.2f%%)\n", label, absolute, percent);
+}
+
 static void dump_migration_statistics(void) 
 {
-    double trans_bytes = bench_normal_pages * TARGET_PAGE_SIZE 
-	+ bench_xbrle_bytes;
+    unsigned long normal_bytes = bench_normal_pages * TARGET_PAGE_SIZE;
+    unsigned long total_pages = bench_normal_pages + bench_xbrle_pages 
+	+ bench_dup_pages;
+    unsigned long total_bytes = normal_bytes + bench_xbrle_bytes;
 
     dprintf("RAM Transfer complete!\n");
     dprintf("Iterations: %ld\n", bench_iterations);
-    dprintf("No of uncompressed pages: %ld\n", bench_normal_pages);
-    dprintf("No transfered bytes: %f\n", trans_bytes);
+
+    dump_percentage("Normal pages", bench_normal_pages, total_pages);
+    dump_percentage("Normal bytes", normal_bytes, total_bytes);
 
     if (!mig_compression_type)
 	return;
 
-    dprintf("No of compressed pages: %ld\n", bench_xbrle_pages);
-    dprintf("No of compressed bytes: %ld\n", bench_xbrle_bytes);
-    dprintf("No of aborted compression pages: %ld\n", 
-	    bench_aborted_compression_pages);
-    dprintf("No of (byte) duplicate pages: %ld\n", bench_dup_pages);
+    dump_percentage("XBRLE pages", bench_xbrle_pages, total_pages);
+    dump_percentage("XBRLE bytes", bench_xbrle_bytes, total_bytes);
+    dump_percentage("Aborted XBRLE pages from XBRLE", 
+	    bench_xbrle_pages_aborted, bench_xbrle_pages);
+
+    dump_percentage("Dup pages", bench_dup_pages, total_pages);
+    dump_percentage("Dup bytes", 0, total_bytes);
+
+    dump_percentage("Total pages", total_pages, total_pages);
+    dump_percentage("Total bytes", total_bytes, total_bytes);
+    
     dprintf("Cache age max value: %ld\n", cache_max_item_age);
 }
 
@@ -3500,9 +3555,9 @@ done:
     return ret;
 }
 
-static int load_delta_comp(QEMUFile *f, ram_addr_t addr)
+static int load_xbrle(QEMUFile *f, ram_addr_t addr)
 {
-    int size, ret, i;
+    int size, ret;
     uint8_t *old_page;
     rle_hdr_t hdr;
 
@@ -3533,9 +3588,7 @@ static int load_delta_comp(QEMUFile *f, ram_addr_t addr)
 
     /* decode XOR delta */
     old_page = qemu_get_ram_ptr(addr);
-    for (i = 0; i < TARGET_PAGE_SIZE; i++)
-	old_page[i] = load_xor_buf[i] ^ old_page[i];
-
+    xor_encode(old_page, load_xor_buf, old_page);
     return 0;
 }
 
@@ -3581,7 +3634,7 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
 	    dprintf("Loaded normal page\n");
         }
 	else if (flags & RAM_SAVE_FLAG_DELTA_COMPRESS) {
-	    if (load_delta_comp(f, addr) < 0) {
+	    if (load_xbrle(f, addr) < 0) {
 		ret = -EINVAL;
 		goto done;
 	    }
