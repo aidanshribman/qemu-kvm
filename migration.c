@@ -29,11 +29,11 @@
     do { } while (0)
 #endif
 
-#ifdef SAP_XBRLE
 int mig_compression_type = 0;
+
 uint32_t mig_cache_size = 0;
+
 static int is_mig_warmup = 0;
-#endif /* SAP_XBRLE */
 
 /* Migration speed throttling */
 static uint32_t max_throttle = (32 << 20);
@@ -96,6 +96,22 @@ void do_migrate_cancel(Monitor *mon, const QDict *qdict)
         s->cancel(s);
 }
 
+static int mega_to_int(char c)
+{	
+    int i = 1;
+    switch (c) {
+    case 'G': case 'g':
+        i *= 1024;
+    case 'M': case 'm':
+        i *= 1024;
+    case 'K': case 'k':
+        i *= 1024;
+    default:
+        break;
+    }
+    return i;
+}
+
 void do_migrate_set_speed(Monitor *mon, const QDict *qdict)
 {
     double d;
@@ -104,16 +120,7 @@ void do_migrate_set_speed(Monitor *mon, const QDict *qdict)
     const char *value = qdict_get_str(qdict, "value");
 
     d = strtod(value, &ptr);
-    switch (*ptr) {
-    case 'G': case 'g':
-        d *= 1024;
-    case 'M': case 'm':
-        d *= 1024;
-    case 'K': case 'k':
-        d *= 1024;
-    default:
-        break;
-    }
+    d *= mega_to_int(*ptr);
 
     max_throttle = (uint32_t)d;
     s = migrate_to_fms(current_migration);
@@ -121,7 +128,6 @@ void do_migrate_set_speed(Monitor *mon, const QDict *qdict)
     if (s) {
         qemu_file_set_rate_limit(s->file, max_throttle);
     }
-    
 }
 
 /* amount of nanoseconds we are willing to wait for migration to be down.
@@ -278,11 +284,9 @@ void migrate_fd_put_ready(void *opaque)
     }
 
     dprintf("iterate\n");
-#ifdef SAP_XBRLE
     if (is_mig_warmup)
 	    qemu_savevm_state_warmup(s->file);
     else
-#endif /* SAP_XBRLE */
     if (qemu_savevm_state_iterate(s->file) == 1) {
         int state;
         int old_vm_running = vm_running;
@@ -365,27 +369,26 @@ int migrate_fd_close(void *opaque)
     return s->close(s);
 }
 
-#ifdef SAP_XBRLE
 void do_migrate_warmup(Monitor *mon, const QDict *qdict)
 {
-	if (!vm_running)
-		return;
-	if (is_mig_warmup)
-		return;
+    if (!vm_running)
+	return;
+    if (is_mig_warmup)
+	return;
 
-	monitor_printf(mon, "Warmup is enabled!\n");
-	do_migrate(mon,qdict);
-	is_mig_warmup = 1;
+    monitor_printf(mon, "Warmup is enabled!\n");
+    do_migrate(mon,qdict);
+    is_mig_warmup = 1;
 }
 
 void do_migrate_warmup_end(Monitor *mon, const QDict *qdict)
 {
-	if (!vm_running)
-		return;
-	if (!is_mig_warmup)
-		return;
-	monitor_printf(mon, "Switching to full live migration!\n");
-	is_mig_warmup = 0;
+    if (!vm_running)
+	return;
+    if (!is_mig_warmup)
+	return;
+    monitor_printf(mon, "Switching to full live migration!\n");
+    is_mig_warmup = 0;
 }
 
 void do_migrate_set_cachesize(Monitor *mon, const QDict *qdict)
@@ -395,17 +398,7 @@ void do_migrate_set_cachesize(Monitor *mon, const QDict *qdict)
     const char *value = qdict_get_str(qdict, "value");
 
     d = strtod(value, &ptr);
-    switch (*ptr) {
-    case 'G': case 'g':
-        d *= 1024;
-    case 'M': case 'm':
-        d *= 1024;
-    case 'K': case 'k':
-        d *= 1024;
-    default:
-        break;
-    }
-
+    d *= mega_to_int(*ptr);
     mig_cache_size = (uint32_t)d;
     monitor_printf(mon, "Cache size set to: %d\n", (uint32_t)d);
 }
@@ -420,5 +413,4 @@ void do_migrate_set_compression(Monitor *mon, const QDict *qdict)
         mig_compression_type = COMP_XBRLE;
     }
 }
-#endif /* SAP_XBRLE */
 

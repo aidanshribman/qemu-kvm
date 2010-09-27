@@ -18,9 +18,6 @@
 #include "sysemu.h"
 #include "buffered_file.h"
 #include "block.h"
-#ifdef SAP_XBRLE
-#include <time.h>
-#endif /* SAP_XBRLE */
 
 #define DEBUG_MIGRATION_TCP
 
@@ -31,12 +28,6 @@
 #define dprintf(fmt, ...) \
     do { } while (0)
 #endif
-
-#ifdef SAP_XBRLE
-struct timeval migration_start_time;
-struct timeval migration_freeze_time;
-struct timeval migration_stop_time;
-#endif /* SAP_XBRLE */
 
 static int socket_errno(FdMigrationState *s)
 {
@@ -93,9 +84,7 @@ MigrationState *tcp_start_outgoing_migration(const char *host_port,
     FdMigrationState *s;
     int ret;
 
-#ifdef SAP_XBRLE
     dprintf("Starting outgoing migration\n");
-#endif /* SAP_XBRLE */
 
     if (parse_host_port(&addr, host_port) < 0)
         return NULL;
@@ -168,9 +157,6 @@ static void tcp_accept_incoming_migration(void *opaque)
         goto out;
     }
 
-#ifdef SAP_XBRLE
-    initXBRLEComprBuffers();
-#endif /* SAP_XBRLE */
     ret = qemu_loadvm_state(f);
     if (ret < 0) {
         fprintf(stderr, "load of migration failed\n");
@@ -178,9 +164,6 @@ static void tcp_accept_incoming_migration(void *opaque)
     }
     qemu_announce_self();
     dprintf("successfully loaded vm state\n");
-#ifdef SAP_XBRLE
-    gettimeofday(&migration_stop_time,NULL);
-#endif /* SAP_XBRLE */
 
     /* we've successfully migrated, close the server socket */
     qemu_set_fd_handler2(s, NULL, NULL, NULL, NULL);
@@ -189,9 +172,6 @@ static void tcp_accept_incoming_migration(void *opaque)
         vm_start();
 
 out_fopen:
-#ifdef SAP_XBRLE
-    freeXBRLEComprBuffers();
-#endif /* SAP_XBRLE */
     qemu_fclose(f);
 out:
     close(c);
