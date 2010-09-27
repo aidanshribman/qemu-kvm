@@ -106,7 +106,6 @@ block-obj-y +=  $(addprefix block/, $(block-nested-y))
 # CPUs and machines.
 
 obj-y = $(block-obj-y)
-obj-y += qemu-common.o
 obj-y += readline.o console.o
 
 obj-y += tcg-runtime.o host-utils.o
@@ -208,8 +207,6 @@ vnc-auth-sasl.o: vnc-auth-sasl.c vnc.h
 curses.o: curses.c keymaps.h curses_keys.h
 
 bt-host.o: QEMU_CFLAGS += $(BLUEZ_CFLAGS)
-
-qemu-common.o: qemu-common.c qemu-common.h
 
 libqemu_common.a: $(obj-y)
 

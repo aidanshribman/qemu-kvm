@@ -101,10 +101,6 @@ void qemu_bh_cancel(QEMUBH *bh);
 void qemu_bh_delete(QEMUBH *bh);
 int qemu_bh_poll(void);
 
-#ifdef SAP_XBRLE
-void fprint_timestamp(FILE *fp);
-#endif /* SAP_XBRLE */
-
 uint64_t muldiv64(uint64_t a, uint32_t b, uint32_t c);
 
 void qemu_get_timedate(struct tm *tm, int offset);
@@ -119,6 +115,7 @@ int qemu_strnlen(const char *s, int max_len);
 time_t mktimegm(struct tm *tm);
 int qemu_fls(int i);
 int qemu_fdatasync(int fd);
+void fprint_timestamp(FILE *fp);
 
 /* path.c */
 void init_paths(const char *prefix);
