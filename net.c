@@ -1589,6 +1589,7 @@ static TAPState *net_tap_fd_init(VLANState *vlan,
     unsigned int offload;
 
     s = qemu_mallocz(sizeof(TAPState));
+    assert(s);
     s->fd = fd;
     s->has_vnet_hdr = vnet_hdr != 0;
     s->vc = qemu_new_vlan_client(vlan, model, name, NULL, tap_receive,
