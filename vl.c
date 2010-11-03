@@ -3166,6 +3166,7 @@ void cache_insert(unsigned long addr, uint8_t *pdata)
 
     /* actual update of entry */
     cache_item_t *it = cache_item_get(pos, slot);
+    qemu_free(it->it_data);
     it->it_data = pdata;
     it->it_age = cache_max_item_age++;
     it->it_addr = addr;
