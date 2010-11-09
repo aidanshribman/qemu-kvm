@@ -351,8 +351,8 @@ typedef struct xbrle_hdr_t {
     uint32_t xb_cksum;
 } xbrle_hdr_t;
 
-static int rle_encode(uint8_t *src, int slen, uint8_t *dst);
-static int rle_decode(uint8_t *src, int slen, uint8_t *dst);
+static int rle_encode(uint8_t *src, int slen, uint8_t *dst, int dlen);
+static int rle_decode(uint8_t *src, int slen, uint8_t *dst, int dlen);
 
 static uint32_t page_cksum(uint8_t* buf)
 {
@@ -3200,9 +3200,9 @@ static void cache_dump_array(uint8_t *array, size_t len)
 }
 #endif
 
-int rle_encode(uint8_t *src, int slen, uint8_t *dst)
+int rle_encode(uint8_t *src, int slen, uint8_t *dst, int dlen)
 {
-    int dlen = 0, ch_run = 0, i;
+    int d = 0, ch_run = 0, i;
     uint8_t prev, ch;
 
     for (i = 0; i <= slen; i++) {
@@ -3212,28 +3212,32 @@ int rle_encode(uint8_t *src, int slen, uint8_t *dst)
 	if (!i || (i != slen && ch == prev && ch_run < 255)) {
 	    ch_run++;
 	} else {
+	    if (d+2 > dlen)
+		return -1;
 	    *dst++ = ch_run;
 	    *dst++ = prev;
-	    dlen += 2;
+	    d += 2;
 	    ch_run = 1;
 	}
 
 	prev = ch;
     }
-    return dlen;
+    return d;
 }
 
-int rle_decode(uint8_t *src, int slen, uint8_t *dst)
+int rle_decode(uint8_t *src, int slen, uint8_t *dst, int dlen)
 {
-    int d, s = slen;
+    int d = 0, s;
 
-    for (d = 0; s > 0; s -= 2) {
-	uint8_t ch;
-	int i = *src++;
-	ch = *src++;
-	d += i;
-	while (i-- > 0)
-	    *dst++ = ch;
+    for (s = 0; s < slen-1; s += 2) {
+	uint8_t ch_run = src[s];
+	uint8_t ch = src[s+1];
+	while (ch_run--) {
+	    if (d == dlen)
+		return -1;
+	    dst[d] = ch;
+	    d++;
+	}
     }
     return d;
 }
@@ -3309,10 +3313,11 @@ static int save_xbrle_page(QEMUFile *f, uint8_t *current_data,
 
     /* XBRLE (XOR+RLE) delta encoding */
     xor_encode(save_xor_buf, it->it_data, current_data);
-    encoded_len = rle_encode(save_xor_buf, TARGET_PAGE_SIZE, save_xbrle_buf);
+    encoded_len = rle_encode(save_xor_buf, TARGET_PAGE_SIZE, save_xbrle_buf,
+	    TARGET_PAGE_SIZE);
     
     if (encoded_len < 0) {
-	dprintf("Failed XBRLE - sending uncompressed\n");
+	dprintf("XBRLE encoding oeverflow - sending uncompressed\n");
 	goto failed;
     }
 
@@ -3593,7 +3598,8 @@ static int load_xbrle(QEMUFile *f, ram_addr_t addr)
     qemu_get_buffer(f, load_xbrle_buf, hdr.xb_len);
 
     /* decode RLE */
-    ret = rle_decode(load_xbrle_buf, hdr.xb_len, load_xor_buf);
+    ret = rle_decode(load_xbrle_buf, hdr.xb_len, load_xor_buf,
+	    TARGET_PAGE_SIZE);
     if (ret == -1) {
 	fprintf(stderr, "Failed to load XBRLE page - decode error!\n");
 	return -1;
