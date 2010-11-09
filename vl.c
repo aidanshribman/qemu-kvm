@@ -3202,24 +3202,23 @@ static void cache_dump_array(uint8_t *array, size_t len)
 
 int rle_encode(uint8_t *src, int slen, uint8_t *dst)
 {
-    int dlen, ch_run;
+    int dlen = 0, ch_run = 0, i;
     uint8_t prev, ch;
 
-    for (prev = ch = *src++, ch_run = 0, dlen = 0;;
-	    prev = ch, ch = *src++, slen--) {
+    for (i = 0; i <= slen; i++) {
+	if (i != slen)
+	    ch = src[i];
 
-	if (slen && ch == prev && ch_run < 255) {
+	if (!i || (i != slen && ch == prev && ch_run < 255)) {
 	    ch_run++;
-	    continue;
+	} else {
+	    *dst++ = ch_run;
+	    *dst++ = prev;
+	    dlen += 2;
+	    ch_run = 1;
 	}
 
-	*dst++ = ch_run;
-	*dst++ = prev;
-	dlen += 2;
-	ch_run = 1;
-
-	if (!slen)
-	    break;
+	prev = ch;
     }
     return dlen;
 }
@@ -3581,7 +3580,12 @@ static int load_xbrle(QEMUFile *f, ram_addr_t addr)
     /* extract RLE header */
     qemu_get_buffer(f, (uint8_t *) &hdr, sizeof(hdr));
     if (! hdr.xb_compress & COMP_XBRLE) {
-	fprintf(stderr, "Failed to load XBRLE page - bad header!\n");
+	fprintf(stderr, "Failed to load XBRLE page - wrong compression!\n");
+	return -1;
+    }
+
+    if (! hdr.xb_len > TARGET_PAGE_SIZE) {
+	fprintf(stderr, "Failed to load XBRLE page - len overflow!\n");
 	return -1;
     }
 
