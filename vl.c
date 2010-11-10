@@ -177,7 +177,7 @@ int main(int argc, char **argv)
 
 //#define DEBUG_NET
 //#define DEBUG_SLIRP
-#define DEBUG_VL
+//#define DEBUG_VL
 
 #ifdef DEBUG_VL
 #define dprintf(fmt, ...) \
@@ -194,15 +194,6 @@ int main(int argc, char **argv)
 #define dfprintf(fmt, ...) \
     do { } while (0)
 #endif
-
-static FILE *get_mig_fd(void)
-{
-    static FILE *fd;
-
-    if (!fd)
-	fd = fopen("mig.log", "w");
-    return fd;
-}
 
 #define DEFAULT_RAM_SIZE 128
 
@@ -365,12 +356,20 @@ static uint32_t page_cksum(uint8_t* buf)
     return res;
 }
 
-static void dprint_page(ram_addr_t addr, uint8_t *pdata)
+static void mig_page_log(ram_addr_t addr, uint8_t *pdata, const char *fmt, ...)
 {
-    static uint32_t page_seq = 0;
+    va_list arg_ptr;
+    static FILE *fp;
+    static uint32_t page_seq;
+
+    va_start(arg_ptr, fmt);
+    if (!fp)
+	fp = fopen("mig.log", "w");
     page_seq++;
-    dfprintf(get_mig_fd(), "[seq %d addr 0x%lX cksum 0x%X] || ", page_seq,
+    fprintf(fp, "[seq %d addr 0x%lX cksum 0x%X] ", page_seq,
 	    (unsigned long) addr, page_cksum(pdata));
+    vfprintf(fp, fmt, arg_ptr);
+    va_end(arg_ptr);
 }
 
 /***********************************************************/
@@ -3329,8 +3328,8 @@ static int save_xbrle_page(QEMUFile *f, uint8_t *current_data,
     qemu_put_be64(f, current_addr | RAM_SAVE_FLAG_DELTA_COMPRESS);
     qemu_put_buffer(f, (uint8_t *) &hdr, sizeof (hdr));
     qemu_put_buffer(f, save_xbrle_buf, encoded_len);
-    dprint_page(current_addr, current_data);
-    dfprintf(get_mig_fd(), "XBRLE page (enc len %d)\n", encoded_len);
+    mig_page_log(current_addr, current_data, 
+	    "XBRLE page (enc len %d)\n", encoded_len);
     bench_xbrle_pages++;
     bench_xbrle_bytes += encoded_len;
     return 0;
@@ -3373,8 +3372,7 @@ static int ram_save_block(QEMUFile *f, int stage)
 		    qemu_put_be64(f, current_addr | RAM_SAVE_FLAG_COMPRESS);
 		    qemu_put_byte(f, *current_data);
 		    bench_dup_pages++;
-		    dprint_page(current_addr, current_data);
-		    dfprintf(get_mig_fd(), "DUP page\n");
+		    mig_page_log(current_addr, current_data, "DUP page\n");
 	    } else if (stage == 2 && mig_compression_type && 
 			save_xbrle_page(f, current_data, current_addr) != -1) {
 		    /* if success - page was handled - do nothing */
@@ -3385,8 +3383,7 @@ static int ram_save_block(QEMUFile *f, int stage)
 #endif /* DEBUG_VL_CKSUM */
 		    qemu_put_buffer(f, current_data, TARGET_PAGE_SIZE);
 		    bench_normal_pages++;
-		    dprint_page(current_addr, current_data);
-		    dfprintf(get_mig_fd(), "NORMAL page\n");
+		    mig_page_log(current_addr, current_data, "NORMAL page\n");
             }
 
 	    if (mig_compression_type)
@@ -3446,6 +3443,7 @@ static void dump_migration_statistics(void)
     unsigned long total_bytes = normal_bytes + bench_xbrle_bytes
 	+ bench_dup_pages;
 
+    printf("\n");
     printf("=====================================================\n");
     printf("Save VM Memory Statistics (SUCCESS or FAILURE):\n");
     printf("Iterations: %ld\n", bench_iterations);
@@ -3473,7 +3471,8 @@ static void dump_migration_statistics(void)
     printf("=====================================================\n");
 }
 
-static void dump_ram_cksum(void)
+#ifdef DEBUG_VL
+static void dump_ram_img(void)
 {
     ram_addr_t addr;
     uint32_t cksum = 0;
@@ -3497,12 +3496,12 @@ static void dump_ram_cksum(void)
     dprintf("full RAM cksum: 0x%X\n", cksum);
 }
 
-static void dump_ram_mem(void)
+static void dump_ram_img(void)
 {
     ram_addr_t addr;
     FILE *fp = NULL;
 
-    if (!(fp = fopen("ram.mem.log", "wb"))) {
+    if (!(fp = fopen("ram.img", "wb"))) {
 	dprintf("Can't open memory dump file\n");
 	return;
     }
@@ -3515,6 +3514,7 @@ static void dump_ram_mem(void)
     fclose(fp);
     dprintf("Complete memory dump\n");
 }
+#endif /* DEBUG_VL */
 
 static int should_dump_ram = 0;
 
@@ -3525,8 +3525,8 @@ static void dump_ram(void)
 	return;
     should_dump_ram = 0;
 
-    dump_ram_cksum();
-    dump_ram_mem();
+    dump_ram_log();
+    dump_ram_img();
 #endif
 }
 
@@ -3654,8 +3654,7 @@ static int load_xbrle(QEMUFile *f, ram_addr_t addr)
 	return -1;
     }
 
-    dprint_page(addr, old_page);
-    dfprintf(get_mig_fd(), "XBRLE page (enc len %d)\n", hdr.xb_len);
+    mig_page_log(addr, old_page, "XBRLE page (enc len %d)\n", hdr.xb_len);
     return 0;
 }
 
@@ -3663,8 +3662,11 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
 {
     ram_addr_t addr;
     int flags, ret = 0;
+    static int num_iter = 0;
 
-    dprintf("starting load of VM\n");
+    num_iter++;
+
+    dprintf("starting load of VM iteration %d\n", num_iter);
 
     load_xbrle_alloc();
 
@@ -3695,16 +3697,14 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
                 madvise(qemu_get_ram_ptr(addr), TARGET_PAGE_SIZE, MADV_DONTNEED);
             }
 #endif
-	    dprint_page(addr, qemu_get_ram_ptr(addr));
-	    dfprintf(get_mig_fd(), "DUP page\n");
+	    mig_page_log(addr, qemu_get_ram_ptr(addr), "DUP page\n");
         } else if (flags & RAM_SAVE_FLAG_PAGE) {
 	    uint32_t src_cksum = 0, dst_cksum = 0;
 #ifdef DEBUG_VL_CKSUM
 	    src_cksum = qemu_get_be32(f);
 #endif /* DEBUG_VL_CKSUM */
             qemu_get_buffer(f, qemu_get_ram_ptr(addr), TARGET_PAGE_SIZE);
-	    dprint_page(addr, qemu_get_ram_ptr(addr));
-	    dfprintf(get_mig_fd(), "NORMAL page\n");
+	    mig_page_log(addr, qemu_get_ram_ptr(addr), "NORMAL page\n");
 #ifdef DEBUG_VL_CKSUM
 	    dst_cksum = page_cksum(qemu_get_ram_ptr(addr));
 #endif /* DEBUG_VL_CKSUM */
@@ -3723,7 +3723,8 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
     } while (!(flags & RAM_SAVE_FLAG_EOS));
 
 done:
-    dprintf("Completed load of VM with exit code %d\n", ret);
+    dprintf("Completed load of VM with exit code %d num iterations %d\n",
+	    ret, num_iter);
     load_xbrle_free();
     should_dump_ram = 1;
     return ret;
