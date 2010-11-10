@@ -3380,7 +3380,9 @@ static int ram_save_block(QEMUFile *f, int stage)
 		    /* if success - page was handled - do nothing */
             } else {
 		    qemu_put_be64(f, current_addr | RAM_SAVE_FLAG_PAGE);
+#ifdef DEBUG_VL_CKSUM
 		    qemu_put_be32(f, page_cksum(current_data));
+#endif /* DEBUG_VL_CKSUM */
 		    qemu_put_buffer(f, current_data, TARGET_PAGE_SIZE);
 		    bench_normal_pages++;
 		    dprint_page(current_addr, current_data);
@@ -3432,7 +3434,7 @@ uint64_t ram_bytes_total(void)
 static void dump_percentage(const char *label, unsigned long absolute, 
 	unsigned long total )
 {
-    dprintf("%s: %ld (%0.2f%%)\n", label, absolute, 
+    printf("%s: %ld (%0.2f%%)\n", label, absolute, 
 	    (100.0 * absolute / total));
 }
 
@@ -3444,9 +3446,9 @@ static void dump_migration_statistics(void)
     unsigned long total_bytes = normal_bytes + bench_xbrle_bytes
 	+ bench_dup_pages;
 
-    dprintf("=====================================================\n");
-    dprintf("Save VM Memory Statistics (SUCCESS or FAILURE):\n");
-    dprintf("Iterations: %ld\n", bench_iterations);
+    printf("=====================================================\n");
+    printf("Save VM Memory Statistics (SUCCESS or FAILURE):\n");
+    printf("Iterations: %ld\n", bench_iterations);
 
     dump_percentage("Normal pages", bench_normal_pages, total_pages);
     dump_percentage("Normal bytes", normal_bytes, total_bytes);
@@ -3468,18 +3470,25 @@ static void dump_migration_statistics(void)
     if (mig_compression_type)
 	dprintf("Cache age max value: %ld\n", cache_max_item_age);
 
-    dprintf("=====================================================\n");
+    printf("=====================================================\n");
 }
 
-static uint32_t dump_ram_cksum(void)
+static int should_dump_ram_cksum = 0;
+
+static void dump_ram_cksum(void)
 {
+#ifdef DEBUG_VL
     ram_addr_t addr;
     uint32_t cksum = 0;
     FILE *fp = NULL;
+
+    if (!should_dump_ram_cksum)
+	return;
+    should_dump_ram_cksum = 0;
     
     if (!(fp = fopen("ram.log", "w"))) {
 	dprintf("Can't open ram log file\n");
-	return 0;
+	return;
     }
 
     for (addr = 0; addr < last_ram_offset; addr += TARGET_PAGE_SIZE) {
@@ -3493,7 +3502,7 @@ static uint32_t dump_ram_cksum(void)
 
     fclose(fp);
     dprintf("full RAM cksum: 0x%X\n", cksum);
-    return cksum;
+#endif
 }
 
 static int ram_save_live(QEMUFile *f, int stage, void *opaque)
@@ -3563,6 +3572,7 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
 	cache_fini();
 	save_xbrle_free();
 	dump_migration_statistics();
+	should_dump_ram_cksum = 1;
 	dump_ram_cksum();
     }
 
@@ -3663,12 +3673,16 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
 	    dprint_page(addr, qemu_get_ram_ptr(addr));
 	    dfprintf(get_mig_fd(), "DUP page\n");
         } else if (flags & RAM_SAVE_FLAG_PAGE) {
-	    uint32_t src_cksum, dst_cksum;
+	    uint32_t src_cksum = 0, dst_cksum = 0;
+#ifdef DEBUG_VL_CKSUM
 	    src_cksum = qemu_get_be32(f);
+#endif /* DEBUG_VL_CKSUM */
             qemu_get_buffer(f, qemu_get_ram_ptr(addr), TARGET_PAGE_SIZE);
 	    dprint_page(addr, qemu_get_ram_ptr(addr));
 	    dfprintf(get_mig_fd(), "NORMAL page\n");
+#ifdef DEBUG_VL_CKSUM
 	    dst_cksum = page_cksum(qemu_get_ram_ptr(addr));
+#endif /* DEBUG_VL_CKSUM */
 	    if (src_cksum != dst_cksum) {
 		dprintf("Wrong checksum received - src 0x%X dst 0x%X\n",
 			src_cksum, dst_cksum);
@@ -3686,6 +3700,7 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
 done:
     dprintf("Completed load of VM with exit code %d\n", ret);
     load_xbrle_free();
+    should_dump_ram_cksum = 1;
     return ret;
 }
 
