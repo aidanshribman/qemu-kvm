@@ -3473,21 +3473,14 @@ static void dump_migration_statistics(void)
     printf("=====================================================\n");
 }
 
-static int should_dump_ram_cksum = 0;
-
 static void dump_ram_cksum(void)
 {
-#ifdef DEBUG_VL
     ram_addr_t addr;
     uint32_t cksum = 0;
     FILE *fp = NULL;
 
-    if (!should_dump_ram_cksum)
-	return;
-    should_dump_ram_cksum = 0;
-    
     if (!(fp = fopen("ram.log", "w"))) {
-	dprintf("Can't open ram log file\n");
+	dprintf("Can't open ram cksum file\n");
 	return;
     }
 
@@ -3502,6 +3495,38 @@ static void dump_ram_cksum(void)
 
     fclose(fp);
     dprintf("full RAM cksum: 0x%X\n", cksum);
+}
+
+static void dump_ram_mem(void)
+{
+    ram_addr_t addr;
+    FILE *fp = NULL;
+
+    if (!(fp = fopen("ram.mem.log", "wb"))) {
+	dprintf("Can't open memory dump file\n");
+	return;
+    }
+
+    for (addr = 0; addr < last_ram_offset; addr += TARGET_PAGE_SIZE) {
+	uint8_t *p = qemu_get_ram_ptr(addr);
+	fwrite(p, TARGET_PAGE_SIZE, 1, fp);
+    }
+
+    fclose(fp);
+    dprintf("Complete memory dump\n");
+}
+
+static int should_dump_ram = 0;
+
+static void dump_ram(void)
+{
+#ifdef DEBUG_VL
+    if (!should_dump_ram)
+	return;
+    should_dump_ram = 0;
+
+    dump_ram_cksum();
+    dump_ram_mem();
 #endif
 }
 
@@ -3572,8 +3597,8 @@ static int ram_save_live(QEMUFile *f, int stage, void *opaque)
 	cache_fini();
 	save_xbrle_free();
 	dump_migration_statistics();
-	should_dump_ram_cksum = 1;
-	dump_ram_cksum();
+	should_dump_ram = 1;
+	dump_ram();
     }
 
     qemu_put_be64(f, RAM_SAVE_FLAG_EOS);
@@ -3700,7 +3725,7 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
 done:
     dprintf("Completed load of VM with exit code %d\n", ret);
     load_xbrle_free();
-    should_dump_ram_cksum = 1;
+    should_dump_ram = 1;
     return ret;
 }
 
@@ -3923,7 +3948,7 @@ static void pause_all_vcpus(void);
 
 void vm_start(void)
 {
-    dump_ram_cksum();
+    dump_ram();
     if (!vm_running) {
         cpu_enable_ticks();
         vm_running = 1;
