@@ -19,7 +19,7 @@
 #include "block.h"
 #include "qemu_socket.h"
 
-#define DEBUG_MIGRATION
+//#define DEBUG_MIGRATION
 
 #ifdef DEBUG_MIGRATION
 #define dprintf(fmt, ...) \
