@@ -3050,8 +3050,8 @@ static int get_num_buckets_in_cache(void)
 {
     int buckets;
 
-    if (mig_cache_size)
-	buckets = (mig_cache_size / TARGET_PAGE_SIZE);
+    if (migrate_cache_size)
+	buckets = (migrate_cache_size / TARGET_PAGE_SIZE);
     else
 	buckets = DEFAULT_CACHE_NUM_PAGES;
     return buckets;
@@ -3290,12 +3290,6 @@ static int save_xbrle_page(QEMUFile *f, uint8_t *current_data,
     xbrle_hdr_t hdr = {0};
     cache_item_t *it;
 
-    /* handle compression type */
-    if (mig_compression_type != COMP_XBRLE) {
-	fprintf(stderr, "Warning compression type is unknown!\n");
-	return -1;
-    }
-
     /* get location */
     if ((slot = cache_is_cached(current_addr)) == -1) {
 	goto failed;
@@ -3373,7 +3367,7 @@ static int ram_save_block(QEMUFile *f, int stage)
 		    qemu_put_byte(f, *current_data);
 		    bench_dup_pages++;
 		    mig_page_log(current_addr, current_data, "DUP page\n");
-	    } else if (stage == 2 && mig_compression_type && 
+	    } else if (stage == 2 && is_migrate_xbrle && 
 			save_xbrle_page(f, current_data, current_addr) != -1) {
 		    /* if success - page was handled - do nothing */
             } else {
@@ -3386,7 +3380,7 @@ static int ram_save_block(QEMUFile *f, int stage)
 		    mig_page_log(current_addr, current_data, "NORMAL page\n");
             }
 
-	    if (mig_compression_type)
+	    if (is_migrate_xbrle)
 		cache_insert(current_addr, current_data);
 
             found = 1;
@@ -3454,7 +3448,7 @@ static void dump_migration_statistics(void)
     dump_percentage("Dup pages", bench_dup_pages, total_pages);
     dump_percentage("Dup bytes", bench_dup_pages, total_bytes);
 
-    if (mig_compression_type) {
+    if (is_migrate_xbrle) {
 	dump_percentage("XBRLE pages", bench_xbrle_pages, total_pages);
 	dump_percentage("XBRLE bytes", bench_xbrle_bytes, total_bytes);
 	dump_percentage("Aborted XBRLE pages from XBRLE", 
@@ -3465,14 +3459,14 @@ static void dump_migration_statistics(void)
     dump_percentage("Total pages", total_pages, total_pages);
     dump_percentage("Total bytes", total_bytes, total_bytes);
     
-    if (mig_compression_type)
+    if (is_migrate_xbrle)
 	dprintf("Cache age max value: %ld\n", cache_max_item_age);
 
     printf("=====================================================\n");
 }
 
 #ifdef DEBUG_VL
-static void dump_ram_img(void)
+static void dump_ram_log(void)
 {
     ram_addr_t addr;
     uint32_t cksum = 0;
