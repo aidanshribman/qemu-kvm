@@ -51,9 +51,9 @@ struct FdMigrationState
 #define COMP_NONE 0x0
 #define COMP_XBRLE 0x1
 
-extern int mig_compression_type;
+extern int is_migrate_xbrle;
 
-extern uint32_t mig_cache_size;
+extern uint32_t migrate_cache_size;
 
 void qemu_start_incoming_migration(const char *uri);
 
@@ -125,11 +125,9 @@ static inline FdMigrationState *migrate_to_fms(MigrationState *mig_state)
 
 void do_migrate_warmup(Monitor *mon, const QDict *qdict);
 
-void do_migrate_warmup_end(Monitor *mon, const QDict *qdict);
+void do_migrate_end(Monitor *mon, const QDict *qdict);
 
 void do_migrate_set_cachesize(Monitor *mon, const QDict *qdict);
-
-void do_migrate_set_compression(Monitor *mon, const QDict *qdict);
 
 #endif
 

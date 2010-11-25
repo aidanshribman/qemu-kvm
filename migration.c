@@ -29,11 +29,11 @@
     do { } while (0)
 #endif
 
-int mig_compression_type = 0;
+int is_migrate_xbrle = 0;
 
-uint32_t mig_cache_size = 0;
+uint32_t migrate_cache_size = 0;
 
-static int is_mig_warmup = 0;
+static int is_migrate_warmup = 0;
 
 /* Migration speed throttling */
 static uint32_t max_throttle = (32 << 20);
@@ -62,8 +62,13 @@ void do_migrate(Monitor *mon, const QDict *qdict)
 {
     MigrationState *s = NULL;
     const char *p;
-    int detach = qdict_get_int(qdict, "detach");
+    int detach = qdict_get_try_int(qdict, "detach", 0);
+    is_migrate_xbrle = qdict_get_try_int(qdict, "xbrle", 0);
+    is_migrate_warmup = qdict_get_try_int(qdict, "warmup", 0);
     const char *uri = qdict_get_str(qdict, "uri");
+
+    if (is_migrate_warmup)
+	detach = 1; /* as we need migrate_end to complte */
 
     if (strstart(uri, "tcp:", &p))
         s = tcp_start_outgoing_migration(p, max_throttle, detach);
@@ -284,7 +289,7 @@ void migrate_fd_put_ready(void *opaque)
     }
 
     dprintf("iterate\n");
-    if (is_mig_warmup)
+    if (is_migrate_warmup)
 	    qemu_savevm_state_warmup(s->file);
     else
     if (qemu_savevm_state_iterate(s->file) == 1) {
@@ -369,26 +374,14 @@ int migrate_fd_close(void *opaque)
     return s->close(s);
 }
 
-void do_migrate_warmup(Monitor *mon, const QDict *qdict)
+void do_migrate_end(Monitor *mon, const QDict *qdict)
 {
     if (!vm_running)
 	return;
-    if (is_mig_warmup)
+    if (!is_migrate_warmup)
 	return;
-
-    monitor_printf(mon, "Warmup is enabled!\n");
-    do_migrate(mon,qdict);
-    is_mig_warmup = 1;
-}
-
-void do_migrate_warmup_end(Monitor *mon, const QDict *qdict)
-{
-    if (!vm_running)
-	return;
-    if (!is_mig_warmup)
-	return;
-    monitor_printf(mon, "Switching to full live migration!\n");
-    is_mig_warmup = 0;
+    monitor_printf(mon, "Entering full live migration!\n");
+    is_migrate_warmup = 0;
 }
 
 void do_migrate_set_cachesize(Monitor *mon, const QDict *qdict)
@@ -399,18 +392,7 @@ void do_migrate_set_cachesize(Monitor *mon, const QDict *qdict)
 
     d = strtod(value, &ptr);
     d *= mega_to_int(*ptr);
-    mig_cache_size = (uint32_t)d;
+    migrate_cache_size = (uint32_t)d;
     monitor_printf(mon, "Cache size set to: %d\n", (uint32_t)d);
-}
-
-void do_migrate_set_compression(Monitor *mon, const QDict *qdict)
-{
-    const char *value = qdict_get_str(qdict, "value");
-
-    if (!strcmp(value,"none")) {
-        mig_compression_type = COMP_NONE;
-    } else if (!strcmp(value,"xbrle")) {
-        mig_compression_type = COMP_XBRLE;
-    }
 }
 

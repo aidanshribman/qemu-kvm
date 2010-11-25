@@ -2945,7 +2945,7 @@ static const mon_cmd_t *monitor_parse_command(Monitor *mon,
                                               const char *cmdline,
                                               QDict *qdict)
 {
-    const char *p, *typestr;
+    const char *p, *typestr = NULL;
     int c;
     const mon_cmd_t *cmd;
     char cmdname[256];
@@ -2972,8 +2972,65 @@ static const mon_cmd_t *monitor_parse_command(Monitor *mon,
         return NULL;
     }
 
-    /* parse the parameters */
-    typestr = cmd->args_type;
+    /* parse the options */
+    for(;;) {
+	const char *new_typestr;
+
+	int has_option = 0, has_valid_option = 0;
+	char option = 0;
+	while (qemu_isspace(*p))
+	    p++;
+	if (*p == '-') {
+	    p++;
+	    option = *p++;
+	    has_option = 1;
+	}
+
+	/* traverse all valid options */
+       	new_typestr = cmd->args_type;
+	for(;;) {
+	    /* check if we have a defined option */
+	    const char *prev_typestr = new_typestr;
+	    new_typestr = key_get_info(prev_typestr, &key);
+	    if (!new_typestr)
+		goto done;
+	    c = *new_typestr;
+	    if (c == '\0')
+		goto bad_type;
+	    new_typestr++;
+	    if (c != '-') {
+		typestr = prev_typestr;
+		break;
+	    }
+
+	    /* cmd defintion has an option */
+	    c = *new_typestr++;
+	    if (!has_option)
+	       continue;
+    	    if (option == c) {
+		has_valid_option = 1;
+		break;
+	    }
+	}
+
+	if (has_option) {
+	    if (!has_valid_option) {
+		monitor_printf(mon, "%s: unsupported option -%c\n", cmdname,
+		       	option);
+		goto fail;
+	    } 
+	    qdict_put(qdict, key, qint_from_int(has_option));
+	}
+
+	if (typestr) {
+	    while (qemu_isspace(*p))
+		p++;
+	    if (*p != '-')
+		break;
+	}
+    }
+
+    /* parse the arguments */
     for(;;) {
         typestr = key_get_info(typestr, &key);
         if (!typestr)
@@ -3132,29 +3189,8 @@ static const mon_cmd_t *monitor_parse_command(Monitor *mon,
             }
             break;
         case '-':
-            {
-                int has_option;
-                /* option */
-
-                c = *typestr++;
-                if (c == '\0')
-                    goto bad_type;
-                while (qemu_isspace(*p))
-                    p++;
-                has_option = 0;
-                if (*p == '-') {
-                    p++;
-                    if (*p != c) {
-                        monitor_printf(mon, "%s: unsupported option -%c\n",
-                                       cmdname, *p);
-                        goto fail;
-                    }
-                    p++;
-                    has_option = 1;
-                }
-                qdict_put(qdict, key, qint_from_int(has_option));
-            }
-            break;
+	    monitor_printf(mon, "%s: missplaced option -%c\n", cmdname, *p);
+            goto fail;
         default:
         bad_type:
             monitor_printf(mon, "%s: unknown type '%c'\n", cmdname, c);
@@ -3163,6 +3199,8 @@ static const mon_cmd_t *monitor_parse_command(Monitor *mon,
         qemu_free(key);
         key = NULL;
     }
+
+done:
     /* check that all arguments were parsed */
     while (qemu_isspace(*p))
         p++;
