@@ -23,8 +23,8 @@
  */
 
 #include "sysbus.h"
-#include "scsi-disk.h"
 #include "scsi.h"
+#include "esp.h"
 
 /* debug ESP card */
 //#define DEBUG_ESP
@@ -77,8 +77,8 @@ struct ESPState {
     uint8_t *async_buf;
     uint32_t async_len;
 
-    espdma_memory_read_write dma_memory_read;
-    espdma_memory_read_write dma_memory_write;
+    ESPDMAMemoryReadWriteFunc dma_memory_read;
+    ESPDMAMemoryReadWriteFunc dma_memory_write;
     void *dma_opaque;
 };
 
@@ -154,6 +154,7 @@ static void esp_raise_irq(ESPState *s)
     if (!(s->rregs[ESP_RSTAT] & STAT_INT)) {
         s->rregs[ESP_RSTAT] |= STAT_INT;
         qemu_irq_raise(s->irq);
+        DPRINTF("Raise IRQ\n");
     }
 }
 
@@ -162,6 +163,7 @@ static void esp_lower_irq(ESPState *s)
     if (s->rregs[ESP_RSTAT] & STAT_INT) {
         s->rregs[ESP_RSTAT] &= ~STAT_INT;
         qemu_irq_lower(s->irq);
+        DPRINTF("Lower IRQ\n");
     }
 }
 
@@ -417,9 +419,9 @@ static void handle_ti(ESPState *s)
     }
 }
 
-static void esp_reset(void *opaque)
+static void esp_hard_reset(DeviceState *d)
 {
-    ESPState *s = opaque;
+    ESPState *s = container_of(d, ESPState, busdev.qdev);
 
     memset(s->rregs, 0, ESP_REGS);
     memset(s->wregs, 0, ESP_REGS);
@@ -433,10 +435,19 @@ static void esp_reset(void *opaque)
     s->rregs[ESP_CFG1] = 7;
 }
 
+static void esp_soft_reset(DeviceState *d)
+{
+    ESPState *s = container_of(d, ESPState, busdev.qdev);
+
+    qemu_irq_lower(s->irq);
+    esp_hard_reset(d);
+}
+
 static void parent_esp_reset(void *opaque, int irq, int level)
 {
-    if (level)
-        esp_reset(opaque);
+    if (level) {
+        esp_soft_reset(opaque);
+    }
 }
 
 static uint32_t esp_mem_readb(void *opaque, target_phys_addr_t addr)
@@ -526,7 +537,7 @@ static void esp_mem_writeb(void *opaque, target_phys_addr_t addr, uint32_t val)
             break;
         case CMD_RESET:
             DPRINTF("Chip reset (%2.2x)\n", val);
-            esp_reset(s);
+            esp_soft_reset(&s->busdev.qdev);
             break;
         case CMD_BUSRESET:
             DPRINTF("Bus reset (%2.2x)\n", val);
@@ -633,8 +644,8 @@ static const VMStateDescription vmstate_esp = {
 };
 
 void esp_init(target_phys_addr_t espaddr, int it_shift,
-              espdma_memory_read_write dma_memory_read,
-              espdma_memory_read_write dma_memory_write,
+              ESPDMAMemoryReadWriteFunc dma_memory_read,
+              ESPDMAMemoryReadWriteFunc dma_memory_write,
               void *dma_opaque, qemu_irq irq, qemu_irq *reset)
 {
     DeviceState *dev;
@@ -665,21 +676,26 @@ static int esp_init1(SysBusDevice *dev)
     esp_io_memory = cpu_register_io_memory(esp_mem_read, esp_mem_write, s);
     sysbus_init_mmio(dev, ESP_REGS << s->it_shift, esp_io_memory);
 
-    esp_reset(s);
-
-    vmstate_register(-1, &vmstate_esp, s);
-    qemu_register_reset(esp_reset, s);
-
     qdev_init_gpio_in(&dev->qdev, parent_esp_reset, 1);
 
     scsi_bus_new(&s->bus, &dev->qdev, 0, ESP_MAX_DEVS, esp_command_complete);
-    scsi_bus_legacy_handle_cmdline(&s->bus);
-    return 0;
+    return scsi_bus_legacy_handle_cmdline(&s->bus);
 }
+
+static SysBusDeviceInfo esp_info = {
+    .init = esp_init1,
+    .qdev.name  = "esp",
+    .qdev.size  = sizeof(ESPState),
+    .qdev.vmsd  = &vmstate_esp,
+    .qdev.reset = esp_hard_reset,
+    .qdev.props = (Property[]) {
+        {.name = NULL}
+    }
+};
 
 static void esp_register_devices(void)
 {
-    sysbus_register_dev("esp", sizeof(ESPState), esp_init1);
+    sysbus_register_withprop(&esp_info);
 }
 
 device_init(esp_register_devices)

@@ -62,12 +62,11 @@ static const uint8_t wm8750_vol_db_table[] = {
 
 static inline void wm8750_in_load(WM8750State *s)
 {
-    int acquired;
     if (s->idx_in + s->req_in <= sizeof(s->data_in))
         return;
     s->idx_in = audio_MAX(0, (int) sizeof(s->data_in) - s->req_in);
-    acquired = AUD_read(*s->in[0], s->data_in + s->idx_in,
-                    sizeof(s->data_in) - s->idx_in);
+    AUD_read(*s->in[0], s->data_in + s->idx_in,
+             sizeof(s->data_in) - s->idx_in);
 }
 
 static inline void wm8750_out_flush(WM8750State *s)
@@ -622,7 +621,6 @@ static int wm8750_init(i2c_slave *i2c)
     AUD_register_card(CODEC, &s->card);
     wm8750_reset(&s->i2c);
 
-    vmstate_register(-1, &vmstate_wm8750, s);
     return 0;
 }
 
@@ -699,6 +697,7 @@ void wm8750_set_bclk_in(void *opaque, int new_hz)
 static I2CSlaveInfo wm8750_info = {
     .qdev.name = "wm8750",
     .qdev.size = sizeof(WM8750State),
+    .qdev.vmsd = &vmstate_wm8750,
     .init = wm8750_init,
     .event = wm8750_event,
     .recv = wm8750_rx,

@@ -37,6 +37,7 @@
 #define PCI_DEVFN(slot, func)   ((((slot) & 0x1f) << 3) | ((func) & 0x07))
 
 typedef struct PCIHostDevice {
+    int seg;
     int bus;
     int dev;
     int func;
@@ -61,15 +62,16 @@ typedef struct {
 } PCIDevRegions;
 
 typedef struct {
-    target_phys_addr_t e_physbase;
-    uint32_t memory_index;
+    pcibus_t e_physbase;
+    ram_addr_t memory_index;
     union {
         void *r_virtbase;    /* mmapped access address for memory regions */
         uint32_t r_baseport; /* the base guest port for I/O regions */
     } u;
     int num;            /* our index within v_addrs[] */
-    uint32_t e_size;    /* emulated size of region in bytes */
-    uint32_t r_size;    /* real size of region in bytes */
+    pcibus_t e_size;    /* emulated size of region in bytes */
+    pcibus_t r_size;    /* real size of region in bytes */
+    PCIRegion *region;
 } AssignedDevRegion;
 
 typedef struct AssignedDevice {
@@ -82,11 +84,11 @@ typedef struct AssignedDevice {
     PCIDevRegions real_device;
     int run;
     int girq;
+    unsigned int h_segnr;
     unsigned char h_busnr;
     unsigned int h_devfn;
     int irq_requested_type;
     int bound;
-    struct pci_dev *pdev;
     struct {
 #define ASSIGNED_DEVICE_CAP_MSI (1 << 0)
 #define ASSIGNED_DEVICE_CAP_MSIX (1 << 1)
@@ -102,6 +104,7 @@ typedef struct AssignedDevice {
     target_phys_addr_t msix_table_addr;
     int mmio_index;
     int need_emulate_cmd;
+    char *configfd_name;
     QLIST_ENTRY(AssignedDevice) next;
 } AssignedDevice;
 

@@ -26,6 +26,7 @@
  */
 #include "hw.h"
 #include "mips.h"
+#include "mips_cpudevs.h"
 #include "pc.h"
 #include "isa.h"
 #include "net.h"
@@ -35,14 +36,6 @@
 #include "loader.h"
 #include "elf.h"
 
-#ifdef TARGET_MIPS64
-#define PHYS_TO_VIRT(x) ((x) | ~0x7fffffffULL)
-#else
-#define PHYS_TO_VIRT(x) ((x) | ~0x7fffffffU)
-#endif
-
-#define VIRT_TO_PHYS_ADDEND (-((int64_t)(int32_t)0x80000000))
-
 static struct _loaderparams {
     int ram_size;
     const char *kernel_filename;
@@ -50,9 +43,14 @@ static struct _loaderparams {
     const char *initrd_filename;
 } loaderparams;
 
-static void load_kernel (CPUState *env)
+typedef struct ResetData {
+    CPUState *env;
+    uint64_t vector;
+} ResetData;
+
+static int64_t load_kernel(void)
 {
-    int64_t entry, kernel_low, kernel_high;
+    int64_t entry, kernel_high;
     long kernel_size;
     long initrd_size;
     ram_addr_t initrd_offset;
@@ -64,13 +62,13 @@ static void load_kernel (CPUState *env)
     big_endian = 0;
 #endif
 
-    kernel_size = load_elf(loaderparams.kernel_filename, VIRT_TO_PHYS_ADDEND,
-                           (uint64_t *)&entry, (uint64_t *)&kernel_low,
-                           (uint64_t *)&kernel_high, big_endian, ELF_MACHINE, 1);
+    kernel_size = load_elf(loaderparams.kernel_filename, cpu_mips_kseg0_to_phys,
+                           NULL, (uint64_t *)&entry, NULL,
+                           (uint64_t *)&kernel_high, big_endian,
+                           ELF_MACHINE, 1);
     if (kernel_size >= 0) {
         if ((entry & ~0x7fffffffULL) == 0x80000000)
             entry = (int32_t)entry;
-        env->active_tc.PC = entry;
     } else {
         fprintf(stderr, "qemu: could not load kernel '%s'\n",
                 loaderparams.kernel_filename);
@@ -99,15 +97,19 @@ static void load_kernel (CPUState *env)
             exit(1);
         }
     }
+    return entry;
 }
 
 static void main_cpu_reset(void *opaque)
 {
-    CPUState *env = opaque;
-    cpu_reset(env);
+    ResetData *s = (ResetData *)opaque;
+    CPUState *env = s->env;
 
-    if (loaderparams.kernel_filename)
-        load_kernel (env);
+    cpu_reset(env);
+    env->active_tc.PC = s->vector & ~(target_ulong)1;
+    if (s->vector & 1) {
+        env->hflags |= MIPS_HFLAG_M16;
+    }
 }
 
 static void
@@ -120,6 +122,7 @@ mips_mipssim_init (ram_addr_t ram_size,
     ram_addr_t ram_offset;
     ram_addr_t bios_offset;
     CPUState *env;
+    ResetData *reset_info;
     int bios_size;
 
     /* Init CPUs. */
@@ -135,11 +138,14 @@ mips_mipssim_init (ram_addr_t ram_size,
         fprintf(stderr, "Unable to find CPU definition\n");
         exit(1);
     }
-    qemu_register_reset(main_cpu_reset, env);
+    reset_info = qemu_mallocz(sizeof(ResetData));
+    reset_info->env = env;
+    reset_info->vector = env->active_tc.PC;
+    qemu_register_reset(main_cpu_reset, reset_info);
 
     /* Allocate RAM. */
-    ram_offset = qemu_ram_alloc(ram_size);
-    bios_offset = qemu_ram_alloc(BIOS_SIZE);
+    ram_offset = qemu_ram_alloc(NULL, "mips_mipssim.ram", ram_size);
+    bios_offset = qemu_ram_alloc(NULL, "mips_mipssim.bios", BIOS_SIZE);
 
     cpu_register_physical_memory(0, ram_size, ram_offset | IO_MEM_RAM);
 
@@ -172,7 +178,7 @@ mips_mipssim_init (ram_addr_t ram_size,
         loaderparams.kernel_filename = kernel_filename;
         loaderparams.kernel_cmdline = kernel_cmdline;
         loaderparams.initrd_filename = initrd_filename;
-        load_kernel(env);
+        reset_info->vector = load_kernel();
     }
 
     /* Init CPU internal devices. */
@@ -180,7 +186,11 @@ mips_mipssim_init (ram_addr_t ram_size,
     cpu_mips_clock_init(env);
 
     /* Register 64 KB of ISA IO space at 0x1fd00000. */
-    isa_mmio_init(0x1fd00000, 0x00010000);
+#ifdef TARGET_WORDS_BIGENDIAN
+    isa_mmio_init(0x1fd00000, 0x00010000, 1);
+#else
+    isa_mmio_init(0x1fd00000, 0x00010000, 0);
+#endif
 
     /* A single 16450 sits at offset 0x3f8. It is attached to
        MIPS CPU INT2, which is interrupt 4. */

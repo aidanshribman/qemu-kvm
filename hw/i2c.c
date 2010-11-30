@@ -62,7 +62,7 @@ i2c_bus *i2c_init_bus(DeviceState *parent, const char *name)
     i2c_bus *bus;
 
     bus = FROM_QBUS(i2c_bus, qbus_create(&i2c_bus_info, parent, name));
-    vmstate_register(-1, &vmstate_i2c_bus, bus);
+    vmstate_register(NULL, -1, &vmstate_i2c_bus, bus);
     return bus;
 }
 
@@ -85,9 +85,11 @@ int i2c_start_transfer(i2c_bus *bus, uint8_t address, int recv)
     i2c_slave *slave = NULL;
 
     QLIST_FOREACH(qdev, &bus->qbus.children, sibling) {
-        slave = I2C_SLAVE_FROM_QDEV(qdev);
-        if (slave->address == address)
+        i2c_slave *candidate = I2C_SLAVE_FROM_QDEV(qdev);
+        if (candidate->address == address) {
+            slave = candidate;
             break;
+        }
     }
 
     if (!slave)

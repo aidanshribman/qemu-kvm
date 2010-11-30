@@ -68,9 +68,7 @@ static void pic_writel (void *opaque, target_phys_addr_t addr, uint32_t value)
     HeathrowPIC *pic;
     unsigned int n;
 
-#ifdef TARGET_WORDS_BIGENDIAN
     value = bswap32(value);
-#endif
     n = ((addr & 0xfff) - 0x10) >> 4;
     PIC_DPRINTF("writel: " TARGET_FMT_plx " %u: %08x\n", addr, n, value);
     if (n >= 2)
@@ -120,9 +118,7 @@ static uint32_t pic_readl (void *opaque, target_phys_addr_t addr)
         }
     }
     PIC_DPRINTF("readl: " TARGET_FMT_plx " %u: %08x\n", addr, n, value);
-#ifdef TARGET_WORDS_BIGENDIAN
     value = bswap32(value);
-#endif
     return value;
 }
 
@@ -228,9 +224,8 @@ qemu_irq *heathrow_pic_init(int *pmem_index,
     s->irqs = irqs[0];
     *pmem_index = cpu_register_io_memory(pic_read, pic_write, s);
 
-    register_savevm("heathrow_pic", -1, 1, heathrow_pic_save,
+    register_savevm(NULL, "heathrow_pic", -1, 1, heathrow_pic_save,
                     heathrow_pic_load, s);
     qemu_register_reset(heathrow_pic_reset, s);
-    heathrow_pic_reset(s);
     return qemu_allocate_irqs(heathrow_pic_set_irq, s, 64);
 }

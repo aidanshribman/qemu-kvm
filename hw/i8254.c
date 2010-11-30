@@ -25,7 +25,7 @@
 #include "pc.h"
 #include "isa.h"
 #include "qemu-timer.h"
-#include "qemu-kvm.h"
+#include "kvm.h"
 #include "i8254.h"
 
 //#define DEBUG_PIT
@@ -487,11 +487,11 @@ void pit_reset(void *opaque)
 #ifdef TARGET_I386
 /* When HPET is operating in legacy mode, i8254 timer0 is disabled */
 
-void hpet_disable_pit(void)
+void hpet_pit_disable(void)
 {
     PITChannelState *s = &pit_state.channels[0];
 
-    if (kvm_enabled() && qemu_kvm_pit_in_kernel()) {
+    if (kvm_enabled() && kvm_pit_in_kernel()) {
         if (qemu_kvm_has_pit_state2()) {
             kvm_hpet_disable_kpit();
         } else {
@@ -510,12 +510,12 @@ void hpet_disable_pit(void)
  * timer 0
  */
 
-void hpet_enable_pit(void)
+void hpet_pit_enable(void)
 {
     PITState *pit = &pit_state;
     PITChannelState *s = &pit->channels[0];
 
-    if (kvm_enabled() && qemu_kvm_pit_in_kernel()) {
+    if (kvm_enabled() && kvm_pit_in_kernel()) {
         if (qemu_kvm_has_pit_state2()) {
             kvm_hpet_enable_kpit();
         } else {
@@ -539,12 +539,10 @@ PITState *pit_init(int base, qemu_irq irq)
     s->irq_timer = qemu_new_timer(vm_clock, pit_irq_timer, s);
     s->irq = irq;
 
-    vmstate_register(base, &vmstate_pit, pit);
+    vmstate_register(NULL, base, &vmstate_pit, pit);
     qemu_register_reset(pit_reset, pit);
     register_ioport_write(base, 4, 1, pit_ioport_write, pit);
     register_ioport_read(base, 3, 1, pit_ioport_read, pit);
-
-    pit_reset(pit);
 
     return pit;
 }

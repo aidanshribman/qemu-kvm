@@ -123,7 +123,7 @@ static void ppc6xx_set_irq (void *opaque, int pin, int level)
                 env->interrupt_request |= CPU_INTERRUPT_EXITTB;
                 /* XXX: TOFIX */
 #if 0
-                cpu_ppc_reset(env);
+                cpu_reset(env);
 #else
                 qemu_system_reset_request();
 #endif
@@ -401,7 +401,7 @@ static inline uint64_t cpu_ppc_get_tb(ppc_tb_t *tb_env, uint64_t vmclk,
     return muldiv64(vmclk, tb_env->tb_freq, get_ticks_per_sec()) + tb_offset;
 }
 
-uint32_t cpu_ppc_load_tbl (CPUState *env)
+uint64_t cpu_ppc_load_tbl (CPUState *env)
 {
     ppc_tb_t *tb_env = env->tb_env;
     uint64_t tb;
@@ -409,7 +409,7 @@ uint32_t cpu_ppc_load_tbl (CPUState *env)
     tb = cpu_ppc_get_tb(tb_env, qemu_get_clock(vm_clock), tb_env->tb_offset);
     LOG_TB("%s: tb %016" PRIx64 "\n", __func__, tb);
 
-    return tb & 0xFFFFFFFF;
+    return tb;
 }
 
 static inline uint32_t _cpu_ppc_load_tbu(CPUState *env)
@@ -463,7 +463,7 @@ void cpu_ppc_store_tbu (CPUState *env, uint32_t value)
     _cpu_ppc_store_tbu(env, value);
 }
 
-uint32_t cpu_ppc_load_atbl (CPUState *env)
+uint64_t cpu_ppc_load_atbl (CPUState *env)
 {
     ppc_tb_t *tb_env = env->tb_env;
     uint64_t tb;
@@ -471,7 +471,7 @@ uint32_t cpu_ppc_load_atbl (CPUState *env)
     tb = cpu_ppc_get_tb(tb_env, qemu_get_clock(vm_clock), tb_env->atb_offset);
     LOG_TB("%s: tb %016" PRIx64 "\n", __func__, tb);
 
-    return tb & 0xFFFFFFFF;
+    return tb;
 }
 
 uint32_t cpu_ppc_load_atbu (CPUState *env)
@@ -1009,7 +1009,7 @@ struct ppc_dcr_t {
     int (*write_error)(int dcrn);
 };
 
-int ppc_dcr_read (ppc_dcr_t *dcr_env, int dcrn, target_ulong *valp)
+int ppc_dcr_read (ppc_dcr_t *dcr_env, int dcrn, uint32_t *valp)
 {
     ppc_dcrn_t *dcr;
 
@@ -1029,7 +1029,7 @@ int ppc_dcr_read (ppc_dcr_t *dcr_env, int dcrn, target_ulong *valp)
     return -1;
 }
 
-int ppc_dcr_write (ppc_dcr_t *dcr_env, int dcrn, target_ulong val)
+int ppc_dcr_write (ppc_dcr_t *dcr_env, int dcrn, uint32_t val)
 {
     ppc_dcrn_t *dcr;
 
@@ -1084,16 +1084,6 @@ int ppc_dcr_init (CPUState *env, int (*read_error)(int dcrn),
 
     return 0;
 }
-
-#if 0
-/*****************************************************************************/
-/* Handle system reset (for now, just stop emulation) */
-void cpu_ppc_reset (CPUState *env)
-{
-    printf("Reset asked... Stop emulation\n");
-    abort();
-}
-#endif
 
 /*****************************************************************************/
 /* Debug port */

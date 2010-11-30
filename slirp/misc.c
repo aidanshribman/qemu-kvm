@@ -132,7 +132,7 @@ fork_exec(struct socket *so, const char *ex, int do_pty)
 		addr.sin_port = 0;
 		addr.sin_addr.s_addr = INADDR_ANY;
 
-		if ((s = socket(AF_INET, SOCK_STREAM, 0)) < 0 ||
+		if ((s = qemu_socket(AF_INET, SOCK_STREAM, 0)) < 0 ||
 		    bind(s, (struct sockaddr *)&addr, addrlen) < 0 ||
 		    listen(s, 1) < 0) {
 			lprint("Error: inet socket: %s\n", strerror(errno));
@@ -165,7 +165,7 @@ fork_exec(struct socket *so, const char *ex, int do_pty)
 			 * Connect to the socket
 			 * XXX If any of these fail, we're in trouble!
 	 		 */
-			s = socket(AF_INET, SOCK_STREAM, 0);
+			s = qemu_socket(AF_INET, SOCK_STREAM, 0);
 			addr.sin_addr = loopback_addr;
                         do {
                             ret = connect(s, (struct sockaddr *)&addr, addrlen);
@@ -179,7 +179,7 @@ fork_exec(struct socket *so, const char *ex, int do_pty)
 		   close(s);
 
 		i = 0;
-		bptr = strdup(ex); /* No need to free() this */
+		bptr = qemu_strdup(ex); /* No need to free() this */
 		if (do_pty == 1) {
 			/* Setup "slirp.telnetd -x" */
 			argv[i++] = "slirp.telnetd";
@@ -200,14 +200,8 @@ fork_exec(struct socket *so, const char *ex, int do_pty)
 		execvp(argv[0], (char **)argv);
 
 		/* Ooops, failed, let's tell the user why */
-		  {
-			  char buff[256];
-
-			  snprintf(buff, sizeof(buff),
-                                   "Error: execvp of %s failed: %s\n",
-                                   argv[0], strerror(errno));
-			  write(2, buff, strlen(buff)+1);
-		  }
+        fprintf(stderr, "Error: execvp of %s failed: %s\n",
+                argv[0], strerror(errno));
 		close(0); close(1); close(2); /* XXX */
 		exit(1);
 
@@ -266,7 +260,7 @@ void lprint(const char *format, ...)
     va_list args;
 
     va_start(args, format);
-    monitor_vprintf(cur_mon, format, args);
+    monitor_vprintf(default_mon, format, args);
     va_end(args);
 }
 

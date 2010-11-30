@@ -8,8 +8,8 @@
  * Authors:
  *  Luiz Capitulino <lcapitulino@redhat.com>
  *
- * This work is licensed under the terms of the GNU GPL, version 2.  See
- * the COPYING file in the top-level directory.
+ * This work is licensed under the terms of the GNU LGPL, version 2.1 or later.
+ * See the COPYING.LIB file in the top-level directory.
  *
  * QObject Reference Counts Terminology
  * ------------------------------------
@@ -41,6 +41,9 @@ typedef enum {
     QTYPE_QSTRING,
     QTYPE_QDICT,
     QTYPE_QLIST,
+    QTYPE_QFLOAT,
+    QTYPE_QBOOL,
+    QTYPE_QERROR,
 } qtype_code;
 
 struct QObject;
@@ -60,7 +63,7 @@ typedef struct QObject {
     QObject base
 
 /* Get the 'base' part of an object */
-#define QOBJECT(obj) (&obj->base)
+#define QOBJECT(obj) (&(obj)->base)
 
 /* High-level interface for qobject_incref() */
 #define QINCREF(obj)      \

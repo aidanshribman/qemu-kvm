@@ -97,7 +97,7 @@ static void vmmouse_mouse_event(void *opaque, int x, int y, int dz, int buttons_
 
     /* need to still generate PS2 events to notify driver to
        read from queue */
-    ps2_mouse_fake_event(s->ps2_mouse);
+    i8042_isa_mouse_fake_event(s->ps2_mouse);
 }
 
 static void vmmouse_update_handler(VMMouseState *s)
@@ -274,7 +274,7 @@ void *vmmouse_init(void *m)
     vmport_register(VMMOUSE_STATUS, vmmouse_ioport_read, s);
     vmport_register(VMMOUSE_COMMAND, vmmouse_ioport_read, s);
     vmport_register(VMMOUSE_DATA, vmmouse_ioport_read, s);
-    vmstate_register(0, &vmstate_vmmouse, s);
+    vmstate_register(NULL, 0, &vmstate_vmmouse, s);
 
     return s;
 }

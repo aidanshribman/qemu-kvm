@@ -44,24 +44,24 @@ typedef struct ISAIDEState {
     qemu_irq  irq;
 } ISAIDEState;
 
-static void isa_ide_save(QEMUFile* f, void *opaque)
+static void isa_ide_reset(DeviceState *d)
 {
-    ISAIDEState *s = opaque;
+    ISAIDEState *s = container_of(d, ISAIDEState, dev.qdev);
 
-    idebus_save(f, &s->bus);
-    ide_save(f, &s->bus.ifs[0]);
-    ide_save(f, &s->bus.ifs[1]);
+    ide_bus_reset(&s->bus);
 }
 
-static int isa_ide_load(QEMUFile* f, void *opaque, int version_id)
-{
-    ISAIDEState *s = opaque;
-
-    idebus_load(f, &s->bus, version_id);
-    ide_load(f, &s->bus.ifs[0], version_id);
-    ide_load(f, &s->bus.ifs[1], version_id);
-    return 0;
-}
+static const VMStateDescription vmstate_ide_isa = {
+    .name = "isa-ide",
+    .version_id = 3,
+    .minimum_version_id = 0,
+    .minimum_version_id_old = 0,
+    .fields      = (VMStateField []) {
+        VMSTATE_IDE_BUS(bus, ISAIDEState),
+        VMSTATE_IDE_DRIVES(bus.ifs, ISAIDEState),
+        VMSTATE_END_OF_LIST()
+    }
+};
 
 static int isa_ide_initfn(ISADevice *dev)
 {
@@ -70,13 +70,13 @@ static int isa_ide_initfn(ISADevice *dev)
     ide_bus_new(&s->bus, &s->dev.qdev);
     ide_init_ioport(&s->bus, s->iobase, s->iobase2);
     isa_init_irq(dev, &s->irq, s->isairq);
-    ide_init2(&s->bus, NULL, NULL, s->irq);
-    register_savevm("isa-ide", 0, 3, isa_ide_save, isa_ide_load, s);
+    ide_init2(&s->bus, s->irq);
+    vmstate_register(&dev->qdev, 0, &vmstate_ide_isa, s);
     return 0;
 };
 
-int isa_ide_init(int iobase, int iobase2, int isairq,
-                 DriveInfo *hd0, DriveInfo *hd1)
+ISADevice *isa_ide_init(int iobase, int iobase2, int isairq,
+                        DriveInfo *hd0, DriveInfo *hd1)
 {
     ISADevice *dev;
     ISAIDEState *s;
@@ -86,20 +86,21 @@ int isa_ide_init(int iobase, int iobase2, int isairq,
     qdev_prop_set_uint32(&dev->qdev, "iobase2", iobase2);
     qdev_prop_set_uint32(&dev->qdev, "irq",     isairq);
     if (qdev_init(&dev->qdev) < 0)
-        return -1;
+        return NULL;
 
     s = DO_UPCAST(ISAIDEState, dev, dev);
     if (hd0)
         ide_create_drive(&s->bus, 0, hd0);
     if (hd1)
         ide_create_drive(&s->bus, 1, hd1);
-    return 0;
+    return dev;
 }
 
 static ISADeviceInfo isa_ide_info = {
     .qdev.name  = "isa-ide",
     .qdev.size  = sizeof(ISAIDEState),
     .init       = isa_ide_initfn,
+    .qdev.reset = isa_ide_reset,
     .qdev.props = (Property[]) {
         DEFINE_PROP_HEX32("iobase",  ISAIDEState, iobase,  0x1f0),
         DEFINE_PROP_HEX32("iobase2", ISAIDEState, iobase2, 0x3f6),

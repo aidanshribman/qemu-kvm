@@ -215,7 +215,7 @@ static void tosa_init(ram_addr_t ram_size,
     cpu = pxa255_init(tosa_binfo.ram_size);
 
     cpu_register_physical_memory(0, TOSA_ROM,
-                    qemu_ram_alloc(TOSA_ROM) | IO_MEM_ROM);
+                    qemu_ram_alloc(NULL, "tosa.rom", TOSA_ROM) | IO_MEM_ROM);
 
     tmio = tc6393xb_init(0x10000000,
             pxa2xx_gpio_in_get(cpu->gpio)[TOSA_GPIO_TC6393XB_INT]);
@@ -228,9 +228,6 @@ static void tosa_init(ram_addr_t ram_size,
     tosa_microdrive_attach(cpu);
 
     tosa_tg_init(cpu);
-
-    /* Setup initial (reset) machine state */
-    cpu->env->regs[15] = tosa_binfo.loader_start;
 
     tosa_binfo.kernel_filename = kernel_filename;
     tosa_binfo.kernel_cmdline = kernel_cmdline;

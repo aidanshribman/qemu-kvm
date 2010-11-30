@@ -24,6 +24,7 @@
 
 #include "hw.h"
 #include "mips.h"
+#include "mips_cpudevs.h"
 #include "pc.h"
 #include "isa.h"
 #include "fdc.h"
@@ -31,9 +32,10 @@
 #include "audio/audio.h"
 #include "boards.h"
 #include "net.h"
-#include "scsi.h"
+#include "esp.h"
 #include "mips-bios.h"
 #include "loader.h"
+#include "mc146818rtc.h"
 
 enum jazz_model_e
 {
@@ -87,7 +89,6 @@ static CPUWriteMemoryFunc * const dma_dummy_write[3] = {
     dma_dummy_writeb,
 };
 
-#ifdef HAS_AUDIO
 static void audio_init(qemu_irq *pic)
 {
     struct soundhw *c;
@@ -107,10 +108,18 @@ static void audio_init(qemu_irq *pic)
         }
     }
 }
-#endif
 
 #define MAGNUM_BIOS_SIZE_MAX 0x7e000
 #define MAGNUM_BIOS_SIZE (BIOS_SIZE < MAGNUM_BIOS_SIZE_MAX ? BIOS_SIZE : MAGNUM_BIOS_SIZE_MAX)
+
+static void cpu_request_exit(void *opaque, int irq, int level)
+{
+    CPUState *env = cpu_single_env;
+
+    if (env && level) {
+        cpu_exit(env);
+    }
+}
 
 static
 void mips_jazz_init (ram_addr_t ram_size,
@@ -128,6 +137,7 @@ void mips_jazz_init (ram_addr_t ram_size,
     PITState *pit;
     DriveInfo *fds[MAX_FD];
     qemu_irq esp_reset;
+    qemu_irq *cpu_exit_irq;
     ram_addr_t ram_offset;
     ram_addr_t bios_offset;
 
@@ -148,10 +158,10 @@ void mips_jazz_init (ram_addr_t ram_size,
     qemu_register_reset(main_cpu_reset, env);
 
     /* allocate RAM */
-    ram_offset = qemu_ram_alloc(ram_size);
+    ram_offset = qemu_ram_alloc(NULL, "mips_jazz.ram", ram_size);
     cpu_register_physical_memory(0, ram_size, ram_offset | IO_MEM_RAM);
 
-    bios_offset = qemu_ram_alloc(MAGNUM_BIOS_SIZE);
+    bios_offset = qemu_ram_alloc(NULL, "mips_jazz.bios", MAGNUM_BIOS_SIZE);
     cpu_register_physical_memory(0x1fc00000LL,
                                  MAGNUM_BIOS_SIZE, bios_offset | IO_MEM_ROM);
     cpu_register_physical_memory(0xfff00000LL,
@@ -185,12 +195,20 @@ void mips_jazz_init (ram_addr_t ram_size,
 
     /* ISA devices */
     i8259 = i8259_init(env->irq[4]);
-    DMA_init(0);
+    isa_bus_new(NULL);
+    isa_bus_irqs(i8259);
+    cpu_exit_irq = qemu_allocate_irqs(cpu_request_exit, NULL, 1);
+    DMA_init(0, cpu_exit_irq);
     pit = pit_init(0x40, i8259[0]);
     pcspk_init(pit);
 
     /* ISA IO space at 0x90000000 */
-    isa_mmio_init(0x90000000, 0x01000000);
+#ifdef TARGET_WORDS_BIGENDIAN
+    isa_mmio_init(0x90000000, 0x01000000, 1);
+#else
+    isa_mmio_init(0x90000000, 0x01000000, 0);
+#endif
+
     isa_mem_base = 0x11000000;
 
     /* Video card */
@@ -239,7 +257,7 @@ void mips_jazz_init (ram_addr_t ram_size,
     fdctrl_init_sysbus(rc4030[1], 0, 0x80003000, fds);
 
     /* Real time clock */
-    rtc_init(1980);
+    rtc_init(1980, NULL);
     s_rtc = cpu_register_io_memory(rtc_read, rtc_write, NULL);
     cpu_register_physical_memory(0x80004000, 0x00001000, s_rtc);
 
@@ -247,10 +265,20 @@ void mips_jazz_init (ram_addr_t ram_size,
     i8042_mm_init(rc4030[6], rc4030[7], 0x80005000, 0x1000, 0x1);
 
     /* Serial ports */
-    if (serial_hds[0])
-        serial_mm_init(0x80006000, 0, rc4030[8], 8000000/16, serial_hds[0], 1);
-    if (serial_hds[1])
-        serial_mm_init(0x80007000, 0, rc4030[9], 8000000/16, serial_hds[1], 1);
+    if (serial_hds[0]) {
+#ifdef TARGET_WORDS_BIGENDIAN
+        serial_mm_init(0x80006000, 0, rc4030[8], 8000000/16, serial_hds[0], 1, 1);
+#else
+        serial_mm_init(0x80006000, 0, rc4030[8], 8000000/16, serial_hds[0], 1, 0);
+#endif
+    }
+    if (serial_hds[1]) {
+#ifdef TARGET_WORDS_BIGENDIAN
+        serial_mm_init(0x80007000, 0, rc4030[9], 8000000/16, serial_hds[1], 1, 1);
+#else
+        serial_mm_init(0x80007000, 0, rc4030[9], 8000000/16, serial_hds[1], 1, 0);
+#endif
+    }
 
     /* Parallel port */
     if (parallel_hds[0])
@@ -258,9 +286,7 @@ void mips_jazz_init (ram_addr_t ram_size,
 
     /* Sound card */
     /* FIXME: missing Jazz sound at 0x8000c000, rc4030[2] */
-#ifdef HAS_AUDIO
     audio_init(i8259);
-#endif
 
     /* NVRAM: Unprotected at 0x9000, Protected at 0xa000, Read only at 0xb000 */
     ds1225y_init(0x80009000, "nvram");

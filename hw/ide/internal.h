@@ -7,6 +7,7 @@
  * non-internal declarations are in hw/ide.h
  */
 #include <hw/ide.h>
+#include "block_int.h"
 
 /* debug IDE devices */
 //#define DEBUG_IDE
@@ -361,6 +362,8 @@ typedef struct BMDMAState BMDMAState;
 #define SMART_DISABLE         0xd9
 #define SMART_STATUS          0xda
 
+typedef enum { IDE_HD, IDE_CD, IDE_CFATA } IDEDriveKind;
+
 typedef void EndTransferFunc(IDEState *);
 
 /* NOTE: IDEState represents in fact one drive */
@@ -368,13 +371,12 @@ struct IDEState {
     IDEBus *bus;
     uint8_t unit;
     /* ide config */
-    int is_cdrom;
-    int is_cf;
+    IDEDriveKind drive_kind;
     int cylinders, heads, sectors;
     int64_t nb_sectors;
     int mult_sectors;
     int identify_set;
-    uint16_t identify_data[256];
+    uint8_t identify_data[512];
     int drive_serial;
     char drive_serial_str[21];
     /* ide regs */
@@ -397,6 +399,7 @@ struct IDEState {
     /* set for lba48 access */
     uint8_t lba48;
     BlockDriverState *bs;
+    char version[9];
     /* ATAPI specific */
     uint8_t sense_key;
     uint8_t asc;
@@ -416,6 +419,11 @@ struct IDEState {
     uint8_t *data_ptr;
     uint8_t *data_end;
     uint8_t *io_buffer;
+    /* PIO save/restore */
+    int32_t io_buffer_total_len;
+    int cur_io_buffer_offset;
+    int cur_io_buffer_len;
+    uint8_t end_transfer_fn_idx;
     QEMUTimer *sector_write_timer; /* only used for win2k install hack */
     uint32_t irq_count; /* counts IRQs when using win2k install hack */
     /* CF-ATA extended error */
@@ -448,15 +456,15 @@ struct IDEBus {
 struct IDEDevice {
     DeviceState qdev;
     uint32_t unit;
-    DriveInfo *dinfo;
+    BlockConf conf;
+    char *version;
+    char *serial;
 };
 
 typedef int (*ide_qdev_initfn)(IDEDevice *dev);
 struct IDEDeviceInfo {
     DeviceInfo qdev;
     ide_qdev_initfn init;
-    uint32_t unit;
-    DriveInfo *drive;
 };
 
 #define BM_STATUS_DMAING 0x01
@@ -464,6 +472,7 @@ struct IDEDeviceInfo {
 #define BM_STATUS_INT    0x04
 #define BM_STATUS_DMA_RETRY  0x08
 #define BM_STATUS_PIO_RETRY  0x10
+#define BM_STATUS_RETRY_READ 0x20
 
 #define BM_CMD_START     0x01
 #define BM_CMD_READ      0x08
@@ -512,18 +521,27 @@ static inline void ide_set_irq(IDEBus *bus)
 }
 
 /* hw/ide/core.c */
-void ide_save(QEMUFile* f, IDEState *s);
-void ide_load(QEMUFile* f, IDEState *s, int version_id);
-void idebus_save(QEMUFile* f, IDEBus *bus);
-void idebus_load(QEMUFile* f, IDEBus *bus, int version_id);
+extern const VMStateDescription vmstate_ide_bus;
 
-void ide_reset(IDEState *s);
+#define VMSTATE_IDE_BUS(_field, _state)                          \
+    VMSTATE_STRUCT(_field, _state, 1, vmstate_ide_bus, IDEBus)
+
+#define VMSTATE_IDE_BUS_ARRAY(_field, _state, _num)              \
+    VMSTATE_STRUCT_ARRAY(_field, _state, _num, 1, vmstate_ide_bus, IDEBus)
+
+extern const VMStateDescription vmstate_ide_drive;
+
+#define VMSTATE_IDE_DRIVES(_field, _state) \
+    VMSTATE_STRUCT_ARRAY(_field, _state, 2, 3, vmstate_ide_drive, IDEState)
+
+void ide_bus_reset(IDEBus *bus);
 int64_t ide_get_sector(IDEState *s);
 void ide_set_sector(IDEState *s, int64_t sector_num);
 
 void ide_dma_cancel(BMDMAState *bm);
 void ide_dma_restart_cb(void *opaque, int running, int reason);
 void ide_dma_error(IDEState *s);
+void ide_dma_reset(BMDMAState *bm);
 
 void ide_atapi_cmd_ok(IDEState *s);
 void ide_atapi_cmd_error(IDEState *s, int sense_key, int asc);
@@ -538,9 +556,11 @@ uint32_t ide_data_readw(void *opaque, uint32_t addr);
 void ide_data_writel(void *opaque, uint32_t addr, uint32_t val);
 uint32_t ide_data_readl(void *opaque, uint32_t addr);
 
-void ide_init_drive(IDEState *s, DriveInfo *dinfo);
-void ide_init2(IDEBus *bus, DriveInfo *hd0, DriveInfo *hd1,
-               qemu_irq irq);
+int ide_init_drive(IDEState *s, BlockDriverState *bs,
+                   const char *version, const char *serial);
+void ide_init2(IDEBus *bus, qemu_irq irq);
+void ide_init2_with_non_qdev_drives(IDEBus *bus, DriveInfo *hd0,
+                                    DriveInfo *hd1, qemu_irq irq);
 void ide_init_ioport(IDEBus *bus, int iobase, int iobase2);
 
 /* hw/ide/qdev.c */

@@ -51,7 +51,7 @@ static void syborg_init(ram_addr_t ram_size,
     }
 
     /* RAM at address zero. */
-    ram_addr = qemu_ram_alloc(ram_size);
+    ram_addr = qemu_ram_alloc(NULL, "syborg.ram", ram_size);
     cpu_register_physical_memory(0, ram_size, ram_addr | IO_MEM_RAM);
 
     cpu_pic = arm_pic_init_cpu(env);
@@ -77,13 +77,13 @@ static void syborg_init(ram_addr_t ram_size,
     sysbus_create_simple("syborg,serial", 0xC0008000, pic[7]);
     sysbus_create_simple("syborg,serial", 0xC0009000, pic[8]);
 
-    if (nd_table[0].vlan) {
+    if (nd_table[0].vlan || nd_table[0].netdev) {
         DeviceState *dev;
         SysBusDevice *s;
 
         qemu_check_nic_model(&nd_table[0], "virtio");
         dev = qdev_create(NULL, "syborg,virtio-net");
-        dev->nd = &nd_table[0];
+        qdev_set_nic_properties(dev, &nd_table[0]);
         qdev_init_nofail(dev);
         s = sysbus_from_qdev(dev);
         sysbus_mmio_map(s, 0, 0xc000c000);

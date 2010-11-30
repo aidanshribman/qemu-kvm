@@ -8,9 +8,7 @@
 #ifndef THE_ORIGINAL_AND_TRUE_QEMU_KVM_H
 #define THE_ORIGINAL_AND_TRUE_QEMU_KVM_H
 
-#ifndef QEMU_KVM_NO_CPU
 #include "cpu.h"
-#endif
 
 #include <signal.h>
 #include <stdlib.h>
@@ -66,8 +64,6 @@ struct kvm_context {
     int irqchip_inject_ioctl;
     /// do not create in-kernel pit if set
     int no_pit_creation;
-    /// in-kernel pit status
-    int pit_in_kernel;
 #ifdef KVM_CAP_IRQ_ROUTING
     struct kvm_irq_routing *irq_routes;
     int nr_allocated_irq_routes;
@@ -76,12 +72,7 @@ struct kvm_context {
     int max_gsi;
 };
 
-struct kvm_vcpu_context {
-    int fd;
-};
-
 typedef struct kvm_context *kvm_context_t;
-typedef struct kvm_vcpu_context *kvm_vcpu_context_t;
 
 #include "kvm.h"
 int kvm_alloc_kernel_memory(kvm_context_t kvm, unsigned long memory,
@@ -95,11 +86,9 @@ int kvm_arch_create(kvm_context_t kvm, unsigned long phys_mem_bytes,
 int kvm_arch_run(CPUState *env);
 
 
-void kvm_show_code(kvm_vcpu_context_t vcpu);
+void kvm_show_code(CPUState *env);
 
-int handle_halt(kvm_vcpu_context_t vcpu);
-
-#ifndef QEMU_KVM_NO_CPU
+int handle_halt(CPUState *env);
 
 int handle_shutdown(kvm_context_t kvm, CPUState *env);
 void post_kvm_run(kvm_context_t kvm, CPUState *env);
@@ -108,29 +97,14 @@ int handle_io_window(kvm_context_t kvm);
 int try_push_interrupts(kvm_context_t kvm);
 
 #if defined(__x86_64__) || defined(__i386__)
-struct kvm_msr_list *kvm_get_msr_list(kvm_context_t);
-int kvm_get_msrs(kvm_vcpu_context_t, struct kvm_msr_entry *msrs, int n);
-int kvm_set_msrs(kvm_vcpu_context_t, struct kvm_msr_entry *msrs, int n);
+int kvm_get_msrs(CPUState *env, struct kvm_msr_entry *msrs, int n);
+int kvm_set_msrs(CPUState *env, struct kvm_msr_entry *msrs, int n);
 int kvm_get_mce_cap_supported(kvm_context_t, uint64_t *mce_cap,
                               int *max_banks);
-int kvm_setup_mce(kvm_vcpu_context_t vcpu, uint64_t *mcg_cap);
+int kvm_setup_mce(CPUState *env, uint64_t *mcg_cap);
 struct kvm_x86_mce;
-int kvm_set_mce(kvm_vcpu_context_t vcpu, struct kvm_x86_mce *mce);
+int kvm_set_mce(CPUState *env, struct kvm_x86_mce *mce);
 #endif
-
-#endif
-
-/*!
- * \brief Create new KVM context
- *
- * This creates a new kvm_context. A KVM context is a small area of data that
- * holds information about the KVM instance that gets created by this call.\n
- * This should always be your first call to KVM.
- *
- * \param opaque Not used
- * \return NULL on failure
- */
-int kvm_init(int smp_cpus);
 
 /*!
  * \brief Disable the in-kernel IRQCHIP creation
@@ -172,18 +146,6 @@ int kvm_create_vm(kvm_context_t kvm);
 void kvm_create_irqchip(kvm_context_t kvm);
 
 /*!
- * \brief Create a new virtual cpu
- *
- * This creates a new virtual cpu (the first vcpu is created by kvm_create()).
- * Should be called from a thread dedicated to the vcpu.
- *
- * \param kvm kvm context
- * \param slot vcpu number (> 0)
- * \return 0 on success, -errno on failure
- */
-kvm_vcpu_context_t kvm_create_vcpu(CPUState *env, int id);
-
-/*!
  * \brief Start the VCPU
  *
  * This starts the VCPU and virtualization is started.\n
@@ -204,18 +166,7 @@ kvm_vcpu_context_t kvm_create_vcpu(CPUState *env, int id);
  * return except for when an error has occured, or when you have sent it
  * an EINTR signal.
  */
-int kvm_run(kvm_vcpu_context_t vcpu, void *env);
-
-/*!
- * \brief Get interrupt flag from on last exit to userspace
- *
- * This gets the CPU interrupt flag as it was on the last exit to userspace.
- *
- * \param kvm Pointer to the current kvm_context
- * \param vcpu Which virtual CPU should get dumped
- * \return interrupt flag value (0 or 1)
- */
-int kvm_get_interrupt_flag(CPUState *env);
+int kvm_run(CPUState *env);
 
 /*!
  * \brief Check if a vcpu is ready for interrupt injection
@@ -243,7 +194,7 @@ int kvm_is_ready_for_interrupt_injection(CPUState *env);
  * registers values
  * \return 0 on success
  */
-int kvm_get_regs(kvm_vcpu_context_t vcpu, struct kvm_regs *regs);
+int kvm_get_regs(CPUState *env, struct kvm_regs *regs);
 
 /*!
  * \brief Write VCPU registers
@@ -258,7 +209,7 @@ int kvm_get_regs(kvm_vcpu_context_t vcpu, struct kvm_regs *regs);
  * registers values
  * \return 0 on success
  */
-int kvm_set_regs(kvm_vcpu_context_t vcpu, struct kvm_regs *regs);
+int kvm_set_regs(CPUState *env, struct kvm_regs *regs);
 /*!
  * \brief Read VCPU fpu registers
  *
@@ -274,7 +225,7 @@ int kvm_set_regs(kvm_vcpu_context_t vcpu, struct kvm_regs *regs);
  * fpu registers values
  * \return 0 on success
  */
-int kvm_get_fpu(kvm_vcpu_context_t vcpu, struct kvm_fpu *fpu);
+int kvm_get_fpu(CPUState *env, struct kvm_fpu *fpu);
 
 /*!
  * \brief Write VCPU fpu registers
@@ -288,7 +239,7 @@ int kvm_get_fpu(kvm_vcpu_context_t vcpu, struct kvm_fpu *fpu);
  * \param fpu Pointer to a kvm_fpu which holds the new vcpu fpu state
  * \return 0 on success
  */
-int kvm_set_fpu(kvm_vcpu_context_t vcpu, struct kvm_fpu *fpu);
+int kvm_set_fpu(CPUState *env, struct kvm_fpu *fpu);
 
 /*!
  * \brief Read VCPU system registers
@@ -306,7 +257,7 @@ int kvm_set_fpu(kvm_vcpu_context_t vcpu, struct kvm_fpu *fpu);
  * registers values
  * \return 0 on success
  */
-int kvm_get_sregs(kvm_vcpu_context_t vcpu, struct kvm_sregs *regs);
+int kvm_get_sregs(CPUState *env, struct kvm_sregs *regs);
 
 /*!
  * \brief Write VCPU system registers
@@ -321,30 +272,48 @@ int kvm_get_sregs(kvm_vcpu_context_t vcpu, struct kvm_sregs *regs);
  * registers values
  * \return 0 on success
  */
-int kvm_set_sregs(kvm_vcpu_context_t vcpu, struct kvm_sregs *regs);
+int kvm_set_sregs(CPUState *env, struct kvm_sregs *regs);
 
 #ifdef KVM_CAP_MP_STATE
 /*!
  *  * \brief Read VCPU MP state
  *
  */
-int kvm_get_mpstate(kvm_vcpu_context_t vcpu, struct kvm_mp_state *mp_state);
+int kvm_get_mpstate(CPUState *env, struct kvm_mp_state *mp_state);
 
 /*!
  *  * \brief Write VCPU MP state
  *
  */
-int kvm_set_mpstate(kvm_vcpu_context_t vcpu, struct kvm_mp_state *mp_state);
+int kvm_set_mpstate(CPUState *env, struct kvm_mp_state *mp_state);
+#endif
+
+#ifdef KVM_CAP_XSAVE
 /*!
- *  * \brief Reset VCPU MP state
+ *  * \brief Read VCPU xsave state
  *
  */
-static inline int kvm_reset_mpstate(kvm_vcpu_context_t vcpu)
-{
-    struct kvm_mp_state mp_state = {.mp_state = KVM_MP_STATE_UNINITIALIZED
-    };
-    return kvm_set_mpstate(vcpu, &mp_state);
-}
+int kvm_get_xsave(CPUState *env, struct kvm_xsave *xsave);
+
+/*!
+ *  * \brief Write VCPU xsave state
+ *
+ */
+int kvm_set_xsave(CPUState *env, struct kvm_xsave *xsave);
+#endif
+
+#ifdef KVM_CAP_XCRS
+/*!
+ *  * \brief Read VCPU XCRs
+ *
+ */
+int kvm_get_xcrs(CPUState *env, struct kvm_xcrs *xcrs);
+
+/*!
+ *  * \brief Write VCPU XCRs
+ *
+ */
+int kvm_set_xcrs(CPUState *env, struct kvm_xcrs *xcrs);
 #endif
 
 /*!
@@ -357,11 +326,7 @@ static inline int kvm_reset_mpstate(kvm_vcpu_context_t vcpu)
  * \param irq Vector number
  * \return 0 on success
  */
-int kvm_inject_irq(kvm_vcpu_context_t vcpu, unsigned irq);
-
-#ifdef KVM_CAP_SET_GUEST_DEBUG
-int kvm_set_guest_debug(kvm_vcpu_context_t, struct kvm_guest_debug *dbg);
-#endif
+int kvm_inject_irq(CPUState *env, unsigned irq);
 
 #if defined(__i386__) || defined(__x86_64__)
 /*!
@@ -375,7 +340,7 @@ int kvm_set_guest_debug(kvm_vcpu_context_t, struct kvm_guest_debug *dbg);
  * \param entries cpuid function entries table
  * \return 0 on success, or -errno on error
  */
-int kvm_setup_cpuid(kvm_vcpu_context_t vcpu, int nent,
+int kvm_setup_cpuid(CPUState *env, int nent,
                     struct kvm_cpuid_entry *entries);
 
 /*!
@@ -391,7 +356,7 @@ int kvm_setup_cpuid(kvm_vcpu_context_t vcpu, int nent,
  * \param entries cpuid function entries table
  * \return 0 on success, or -errno on error
  */
-int kvm_setup_cpuid2(kvm_vcpu_context_t vcpu, int nent,
+int kvm_setup_cpuid2(CPUState *env, int nent,
                      struct kvm_cpuid_entry2 *entries);
 
 /*!
@@ -413,21 +378,6 @@ int kvm_get_shadow_pages(kvm_context_t kvm, unsigned int *nrshadow_pages);
 #endif
 
 /*!
- * \brief Set a vcpu's signal mask for guest mode
- *
- * A vcpu can have different signals blocked in guest mode and user mode.
- * This allows guest execution to be interrupted on a signal, without requiring
- * that the signal be delivered to a signal handler (the signal can be
- * dequeued using sigwait(2).
- *
- * \param kvm Pointer to the current kvm_context
- * \param vcpu Which virtual CPU should be initialized
- * \param sigset signal mask for guest mode
- * \return 0 on success, or -errno on error
- */
-int kvm_set_signal_mask(kvm_vcpu_context_t vcpu, const sigset_t *sigset);
-
-/*!
  * \brief Dump VCPU registers
  *
  * This dumps some of the information that KVM has about a virtual CPU, namely:
@@ -439,21 +389,18 @@ int kvm_set_signal_mask(kvm_vcpu_context_t vcpu, const sigset_t *sigset);
  * \param vcpu Which virtual CPU should get dumped
  * \return 0 on success
  */
-void kvm_show_regs(kvm_vcpu_context_t vcpu);
+void kvm_show_regs(CPUState *env);
 
 
 void *kvm_create_phys_mem(kvm_context_t, unsigned long phys_start,
                           unsigned long len, int log, int writable);
 void kvm_destroy_phys_mem(kvm_context_t, unsigned long phys_start,
                           unsigned long len);
-void kvm_unregister_memory_area(kvm_context_t, uint64_t phys_start,
-                                unsigned long len);
 
 int kvm_is_containing_region(kvm_context_t kvm, unsigned long phys_start,
                              unsigned long size);
 int kvm_register_phys_mem(kvm_context_t kvm, unsigned long phys_start,
                           void *userspace_addr, unsigned long len, int log);
-int kvm_get_dirty_pages(kvm_context_t, unsigned long phys_addr, void *buf);
 int kvm_get_dirty_pages_range(kvm_context_t kvm, unsigned long phys_addr,
                               unsigned long end_addr, void *opaque,
                               int (*cb)(unsigned long start,
@@ -463,23 +410,6 @@ int kvm_register_coalesced_mmio(kvm_context_t kvm, uint64_t addr,
                                 uint32_t size);
 int kvm_unregister_coalesced_mmio(kvm_context_t kvm, uint64_t addr,
                                   uint32_t size);
-
-/*!
- * \brief Create a memory alias
- *
- * Aliases a portion of physical memory to another portion.  If the guest
- * accesses the alias region, it will behave exactly as if it accessed
- * the target memory.
- */
-int kvm_create_memory_alias(kvm_context_t, uint64_t phys_start, uint64_t len,
-                            uint64_t target_phys);
-
-/*!
- * \brief Destroy a memory alias
- *
- * Removes an alias created with kvm_create_memory_alias().
- */
-int kvm_destroy_memory_alias(kvm_context_t, uint64_t phys_start);
 
 /*!
  * \brief Get a bitmap of guest ram pages which are allocated to the guest.
@@ -551,7 +481,7 @@ int kvm_set_irqchip(kvm_context_t kvm, struct kvm_irqchip *chip);
  * \param vcpu Which virtual CPU should be accessed
  * \param s Local apic state of the specific virtual CPU
  */
-int kvm_get_lapic(kvm_vcpu_context_t vcpu, struct kvm_lapic_state *s);
+int kvm_get_lapic(CPUState *env, struct kvm_lapic_state *s);
 
 /*!
  * \brief Set in kernel local APIC for vcpu
@@ -562,7 +492,7 @@ int kvm_get_lapic(kvm_vcpu_context_t vcpu, struct kvm_lapic_state *s);
  * \param vcpu Which virtual CPU should be accessed
  * \param s Local apic state of the specific virtual CPU
  */
-int kvm_set_lapic(kvm_vcpu_context_t vcpu, struct kvm_lapic_state *s);
+int kvm_set_lapic(CPUState *env, struct kvm_lapic_state *s);
 
 #endif
 
@@ -575,7 +505,7 @@ int kvm_set_lapic(kvm_vcpu_context_t vcpu, struct kvm_lapic_state *s);
  * \param vcpu Which virtual CPU should get dumped
  * \return 0 on success
  */
-int kvm_inject_nmi(kvm_vcpu_context_t vcpu);
+int kvm_inject_nmi(CPUState *env);
 
 #endif
 
@@ -595,13 +525,6 @@ int kvm_inject_nmi(kvm_vcpu_context_t vcpu);
 void kvm_inject_x86_mce(CPUState *cenv, int bank, uint64_t status,
                         uint64_t mcg_status, uint64_t addr, uint64_t misc,
                         int abort_on_error);
-
-/*!
- * \brief Query wheather in kernel pit is used
- *
- *  \param kvm Pointer to the current kvm_context
- */
-int kvm_pit_in_kernel(kvm_context_t kvm);
 
 /*!
  * \brief Initialize coalesced MMIO
@@ -673,28 +596,7 @@ int kvm_get_pit2(kvm_context_t kvm, struct kvm_pit_state2 *ps2);
 
 #ifdef KVM_CAP_VAPIC
 
-/*!
- * \brief Enable kernel tpr access reporting
- *
- * When tpr access reporting is enabled, the kernel will call the
- * ->tpr_access() callback every time the guest vcpu accesses the tpr.
- *
- * \param kvm Pointer to the current kvm_context
- * \param vcpu vcpu to enable tpr access reporting on
- */
-int kvm_enable_tpr_access_reporting(kvm_vcpu_context_t vcpu);
-
-/*!
- * \brief Disable kernel tpr access reporting
- *
- * Undoes the effect of kvm_enable_tpr_access_reporting().
- *
- * \param kvm Pointer to the current kvm_context
- * \param vcpu vcpu to disable tpr access reporting on
- */
-int kvm_disable_tpr_access_reporting(kvm_vcpu_context_t vcpu);
-
-int kvm_enable_vapic(kvm_vcpu_context_t vcpu, uint64_t vapic);
+int kvm_enable_vapic(CPUState *env, uint64_t vapic);
 
 #endif
 
@@ -743,15 +645,6 @@ int kvm_assign_irq(kvm_context_t kvm, struct kvm_assigned_irq *assigned_irq);
 int kvm_deassign_irq(kvm_context_t kvm, struct kvm_assigned_irq *assigned_irq);
 #endif
 #endif
-
-/*!
- * \brief Determines whether destroying memory regions is allowed
- *
- * KVM before 2.6.29 had a bug when destroying memory regions.
- *
- * \param kvm Pointer to the current kvm_context
- */
-int kvm_destroy_memory_region_works(kvm_context_t kvm);
 
 #ifdef KVM_CAP_DEVICE_DEASSIGNMENT
 /*!
@@ -893,8 +786,6 @@ int kvm_assign_set_msix_entry(kvm_context_t kvm,
                               struct kvm_assigned_msix_entry *entry);
 #endif
 
-uint32_t kvm_get_supported_cpuid(kvm_context_t kvm, uint32_t function, int reg);
-
 #else                           /* !CONFIG_KVM */
 
 typedef struct kvm_context *kvm_context_t;
@@ -902,13 +793,6 @@ typedef struct kvm_vcpu_context *kvm_vcpu_context_t;
 
 struct kvm_pit_state {
 };
-
-static inline int kvm_init(int smp_cpus)
-{
-    return 0;
-}
-
-#ifndef QEMU_KVM_NO_CPU
 
 static inline void kvm_inject_x86_mce(CPUState *cenv, int bank,
                                       uint64_t status, uint64_t mcg_status,
@@ -919,49 +803,39 @@ static inline void kvm_inject_x86_mce(CPUState *cenv, int bank,
         abort();
 }
 
-#endif
-
-extern int kvm_allowed;
-
 #endif                          /* !CONFIG_KVM */
 
 
+/*!
+ * \brief Create new KVM context
+ *
+ * This creates a new kvm_context. A KVM context is a small area of data that
+ * holds information about the KVM instance that gets created by this call.\n
+ * This should always be your first call to KVM.
+ *
+ * \param opaque Not used
+ * \return NULL on failure
+ */
+int kvm_init(int smp_cpus);
+
 int kvm_main_loop(void);
 int kvm_init_ap(void);
-#ifndef QEMU_KVM_NO_CPU
 int kvm_vcpu_inited(CPUState *env);
-void kvm_load_registers(CPUState *env);
-void kvm_save_registers(CPUState *env);
-void kvm_load_mpstate(CPUState *env);
-void kvm_save_mpstate(CPUState *env);
-int kvm_cpu_exec(CPUState *env);
-int kvm_insert_breakpoint(CPUState * current_env, target_ulong addr,
-                          target_ulong len, int type);
-int kvm_remove_breakpoint(CPUState * current_env, target_ulong addr,
-                          target_ulong len, int type);
-void kvm_remove_all_breakpoints(CPUState * current_env);
-int kvm_update_guest_debug(CPUState *env, unsigned long reinject_trap);
-void kvm_apic_init(CPUState *env);
-/* called from vcpu initialization */
-void qemu_kvm_load_lapic(CPUState *env);
-#endif
+void kvm_save_lapic(CPUState *env);
+void kvm_load_lapic(CPUState *env);
 
 void kvm_hpet_enable_kpit(void);
 void kvm_hpet_disable_kpit(void);
 int kvm_set_irq(int irq, int level, int *status);
 
 int kvm_physical_memory_set_dirty_tracking(int enable);
-int kvm_update_dirty_pages_log(void);
 
-#ifndef QEMU_KVM_NO_CPU
 void qemu_kvm_call_with_env(void (*func)(void *), void *data, CPUState *env);
 void qemu_kvm_cpuid_on_env(CPUState *env);
 void kvm_inject_interrupt(CPUState *env, int mask);
 void kvm_update_after_sipi(CPUState *env);
 void kvm_update_interrupt_request(CPUState *env);
-#endif
-void kvm_set_phys_mem(target_phys_addr_t start_addr, ram_addr_t size,
-                      ram_addr_t phys_offset);
+#ifndef CONFIG_USER_ONLY
 void *kvm_cpu_create_phys_mem(target_phys_addr_t start_addr, unsigned long size,
                               int log, int writable);
 
@@ -969,21 +843,15 @@ void kvm_cpu_destroy_phys_mem(target_phys_addr_t start_addr,
                               unsigned long size);
 void kvm_qemu_log_memory(target_phys_addr_t start, target_phys_addr_t size,
                          int log);
-int kvm_setup_guest_memory(void *area, unsigned long size);
+#endif
 int kvm_qemu_create_memory_alias(uint64_t phys_start, uint64_t len,
                                  uint64_t target_phys);
 int kvm_qemu_destroy_memory_alias(uint64_t phys_start);
 
 int kvm_arch_qemu_create_context(void);
 
-#ifndef QEMU_KVM_NO_CPU
 void kvm_arch_save_regs(CPUState *env);
-void kvm_arch_load_regs(CPUState *env);
-void kvm_arch_load_mpstate(CPUState *env);
-void kvm_arch_save_mpstate(CPUState *env);
-int kvm_arch_init_vcpu(CPUState *cenv);
-void kvm_arch_pre_kvm_run(void *opaque, CPUState *env);
-void kvm_arch_post_kvm_run(void *opaque, CPUState *env);
+void kvm_arch_load_regs(CPUState *env, int level);
 int kvm_arch_has_work(CPUState *env);
 void kvm_arch_process_irqchip_events(CPUState *env);
 int kvm_arch_try_push_interrupts(void *opaque);
@@ -991,50 +859,13 @@ void kvm_arch_push_nmi(void *opaque);
 void kvm_arch_cpu_reset(CPUState *env);
 int kvm_set_boot_cpu_id(uint32_t id);
 
-struct kvm_guest_debug;
-struct kvm_debug_exit_arch;
-
-struct kvm_sw_breakpoint {
-    target_ulong pc;
-    target_ulong saved_insn;
-    int use_count;
-    QTAILQ_ENTRY(kvm_sw_breakpoint) entry;
-};
-
-QTAILQ_HEAD(kvm_sw_breakpoint_head, kvm_sw_breakpoint);
-
-int kvm_arch_debug(struct kvm_debug_exit_arch *arch_info);
-int kvm_sw_breakpoints_active(CPUState *env);
-struct kvm_sw_breakpoint *kvm_find_sw_breakpoint(CPUState *env,
-                                                 target_ulong pc);
-int kvm_arch_insert_sw_breakpoint(CPUState * current_env,
-                                  struct kvm_sw_breakpoint *bp);
-int kvm_arch_remove_sw_breakpoint(CPUState * current_env,
-                                  struct kvm_sw_breakpoint *bp);
-int kvm_arch_insert_hw_breakpoint(target_ulong addr, target_ulong len,
-                                  int type);
-int kvm_arch_remove_hw_breakpoint(target_ulong addr, target_ulong len,
-                                  int type);
-void kvm_arch_remove_all_hw_breakpoints(void);
-void kvm_arch_update_guest_debug(CPUState *env, struct kvm_guest_debug *dbg);
-
-#endif
-
 void qemu_kvm_aio_wait_start(void);
 void qemu_kvm_aio_wait(void);
 void qemu_kvm_aio_wait_end(void);
 
 void qemu_kvm_notify_work(void);
 
-#ifndef QEMU_KVM_NO_CPU
-void kvm_tpr_opt_setup(void);
 void kvm_tpr_access_report(CPUState *env, uint64_t rip, int is_write);
-void kvm_tpr_vcpu_start(CPUState *env);
-#endif
-
-int qemu_kvm_get_dirty_pages(unsigned long phys_addr, void *buf);
-int kvm_coalesce_mmio_region(target_phys_addr_t start, ram_addr_t size);
-int kvm_uncoalesce_mmio_region(target_phys_addr_t start, ram_addr_t size);
 
 int kvm_arch_init_irq_routing(void);
 
@@ -1051,14 +882,11 @@ void kvm_arch_do_ioperm(void *_data);
 #endif
 
 #define ALIGN(x, y)  (((x)+(y)-1) & ~((y)-1))
-#ifndef QEMU_KVM_NO_CPU
 #define BITMAP_SIZE(m) (ALIGN(((m)>>TARGET_PAGE_BITS), HOST_LONG_BITS) / 8)
-#endif
 
 #ifdef CONFIG_KVM
 #include "qemu-queue.h"
 
-extern int kvm_allowed;
 extern int kvm_irqchip;
 extern int kvm_pit;
 extern int kvm_pit_reinject;
@@ -1073,87 +901,31 @@ struct ioperm_data {
 };
 
 void qemu_kvm_cpu_stop(CPUState *env);
-int kvm_arch_halt(kvm_vcpu_context_t vcpu);
-int handle_tpr_access(void *opaque, kvm_vcpu_context_t vcpu, uint64_t rip,
+int kvm_arch_halt(CPUState *env);
+int handle_tpr_access(void *opaque, CPUState *env, uint64_t rip,
                       int is_write);
-int kvm_has_sync_mmu(void);
 
-#define kvm_enabled() (kvm_allowed)
-#define qemu_kvm_pit_in_kernel() kvm_pit_in_kernel(kvm_context)
 #define qemu_kvm_has_gsi_routing() kvm_has_gsi_routing(kvm_context)
 #ifdef TARGET_I386
 #define qemu_kvm_has_pit_state2() kvm_has_pit_state2(kvm_context)
 #endif
-void kvm_init_vcpu(CPUState *env);
-void kvm_load_tsc(CPUState *env);
 #else
-#define kvm_has_sync_mmu() (0)
-#define kvm_enabled() (0)
 #define kvm_nested 0
-#define qemu_kvm_pit_in_kernel() (0)
 #define qemu_kvm_has_gsi_routing() (0)
-#ifndef QEMU_KVM_NO_CPU
 #ifdef TARGET_I386
 #define qemu_kvm_has_pit_state2() (0)
 #endif
-#define kvm_load_registers(env) do {} while(0)
-#define kvm_save_registers(env) do {} while(0)
 #define qemu_kvm_cpu_stop(env) do {} while(0)
-static inline void kvm_init_vcpu(CPUState *env)
-{
-}
-
-static inline void kvm_load_tsc(CPUState *env)
-{
-}
-#endif
 #endif
 
 void kvm_mutex_unlock(void);
 void kvm_mutex_lock(void);
-
-int kvm_physical_sync_dirty_bitmap(target_phys_addr_t start_addr,
-                                   target_phys_addr_t end_addr);
-
-int kvm_log_start(target_phys_addr_t phys_addr, target_phys_addr_t len);
-int kvm_log_stop(target_phys_addr_t phys_addr, target_phys_addr_t len);
-
 
 static inline int kvm_sync_vcpus(void)
 {
     return 0;
 }
 
-#ifndef QEMU_KVM_NO_CPU
-void kvm_arch_get_registers(CPUState *env);
-
-static inline void kvm_arch_put_registers(CPUState *env)
-{
-    kvm_load_registers(env);
-}
-
-void kvm_cpu_synchronize_state(CPUState *env);
-
-static inline void cpu_synchronize_state(CPUState *env)
-{
-    if (kvm_enabled()) {
-        kvm_cpu_synchronize_state(env);
-    }
-}
-
-uint32_t kvm_arch_get_supported_cpuid(CPUState *env, uint32_t function,
-                                      int reg);
-
-
-#endif
-
-static inline int kvm_set_migration_log(int enable)
-{
-    return kvm_physical_memory_set_dirty_tracking(enable);
-}
-
-
-int kvm_irqchip_in_kernel(void);
 #ifdef CONFIG_KVM
 
 typedef struct KVMSlot {
@@ -1166,26 +938,34 @@ typedef struct KVMSlot {
 
 typedef struct kvm_dirty_log KVMDirtyLog;
 
-typedef struct KVMState {
+struct KVMState {
     KVMSlot slots[32];
     int fd;
     int vmfd;
     int coalesced_mmio;
+#ifdef KVM_CAP_COALESCED_MMIO
+    struct kvm_coalesced_mmio_ring *coalesced_mmio_ring;
+#endif
     int broken_set_mem_region;
     int migration_log;
+    int vcpu_events;
+    int robust_singlestep;
+    int debugregs;
 #ifdef KVM_CAP_SET_GUEST_DEBUG
     QTAILQ_HEAD(, kvm_sw_breakpoint) kvm_sw_breakpoints;
 #endif
     int irqchip_in_kernel;
+    int pit_in_kernel;
 
     struct kvm_context kvm_context;
-} KVMState;
+};
 
-extern KVMState *kvm_state;
+extern struct KVMState *kvm_state;
 
-int kvm_ioctl(KVMState *s, int type, ...);
-int kvm_vm_ioctl(KVMState *s, int type, ...);
-int kvm_check_extension(KVMState *s, unsigned int ext);
+int kvm_tpr_enable_vapic(CPUState *env);
+
+unsigned long kvm_get_thread_id(void);
+int kvm_cpu_is_stopped(CPUState *env);
 
 #endif
 

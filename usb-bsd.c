@@ -335,7 +335,7 @@ USBDevice *usb_host_device_open(const char *devname)
         return NULL;
     }
 
-#if defined(__FreeBSD__) || defined(__DragonFly__)
+#if defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || defined(__DragonFly__)
     snprintf(ctlpath, PATH_MAX, "/dev/%s", bus_info.udi_devnames[0]);
 #else
     snprintf(ctlpath, PATH_MAX, "/dev/%s.00", bus_info.udi_devnames[0]);
@@ -361,7 +361,7 @@ USBDevice *usb_host_device_open(const char *devname)
             goto fail;
         }
 
-        d = usb_create(NULL /* FIXME */, "USB Host Device");
+        d = usb_create(NULL /* FIXME */, "usb-host");
         dev = DO_UPCAST(USBHostDevice, dev, d);
 
         if (dev_info.udi_speed == 1)
@@ -370,10 +370,10 @@ USBDevice *usb_host_device_open(const char *devname)
             dev->dev.speed = USB_SPEED_FULL - 1;
 
         if (strncmp(dev_info.udi_product, "product", 7) != 0)
-            pstrcpy(dev->dev.devname, sizeof(dev->dev.devname),
+            pstrcpy(dev->dev.product_desc, sizeof(dev->dev.product_desc),
                     dev_info.udi_product);
         else
-            snprintf(dev->dev.devname, sizeof(dev->dev.devname),
+            snprintf(dev->dev.product_desc, sizeof(dev->dev.product_desc),
                      "host:%s", devname);
 
         pstrcpy(dev->devpath, sizeof(dev->devpath), "/dev/");
@@ -393,7 +393,8 @@ fail:
 }
 
 static struct USBDeviceInfo usb_host_dev_info = {
-    .qdev.name      = "USB Host Device",
+    .product_desc   = "USB Host Device",
+    .qdev.name      = "usb-host",
     .qdev.size      = sizeof(USBHostDevice),
     .init           = usb_host_initfn,
     .handle_packet  = usb_generic_handle_packet,
@@ -437,7 +438,7 @@ static int usb_host_scan(void *opaque, USBScanFunc *func)
             if (strncmp(bus_info.udi_devnames[0], "ugen", 4) != 0)
                 continue;
 
-#if defined(__FreeBSD__) || defined(__DragonFly__)
+#if defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || defined(__DragonFly__)
             snprintf(devbuf, sizeof(devbuf) - 1, "/dev/%s", bus_info.udi_devnames[0]);
 #else
             snprintf(devbuf, sizeof(devbuf) - 1, "/dev/%s.00", bus_info.udi_devnames[0]);

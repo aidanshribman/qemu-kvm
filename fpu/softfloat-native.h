@@ -1,7 +1,8 @@
 /* Native implementation of soft float functions */
 #include <math.h>
 
-#if (defined(CONFIG_BSD) && !defined(__APPLE__)) || defined(CONFIG_SOLARIS)
+#if (defined(CONFIG_BSD) && !defined(__APPLE__) && !defined(__GLIBC__)) \
+    || defined(CONFIG_SOLARIS)
 #include <ieeefp.h>
 #define fabsf(f) ((float)fabs(f))
 #else
@@ -21,7 +22,7 @@
  */
 #if defined(CONFIG_SOLARIS) && \
            ((CONFIG_SOLARIS_VERSION <= 9 ) || \
-           ((CONFIG_SOLARIS_VERSION >= 10) && (__GNUC__ < 4))) \
+           ((CONFIG_SOLARIS_VERSION == 10) && (__GNUC__ < 4))) \
     || (defined(__OpenBSD__) && (OpenBSD < 200811))
 /*
  * C99 7.12.3 classification macros
@@ -112,7 +113,8 @@ typedef union {
 /*----------------------------------------------------------------------------
 | Software IEC/IEEE floating-point rounding mode.
 *----------------------------------------------------------------------------*/
-#if (defined(CONFIG_BSD) && !defined(__APPLE__)) || defined(CONFIG_SOLARIS)
+#if (defined(CONFIG_BSD) && !defined(__APPLE__) && !defined(__GLIBC__)) \
+    || defined(CONFIG_SOLARIS)
 #if defined(__OpenBSD__)
 #define FE_RM FP_RM
 #define FE_RP FP_RP
@@ -123,13 +125,6 @@ enum {
     float_round_down         = FP_RM,
     float_round_up           = FP_RP,
     float_round_to_zero      = FP_RZ
-};
-#elif defined(__arm__)
-enum {
-    float_round_nearest_even = 0,
-    float_round_down         = 1,
-    float_round_up           = 2,
-    float_round_to_zero      = 3
 };
 #else
 enum {

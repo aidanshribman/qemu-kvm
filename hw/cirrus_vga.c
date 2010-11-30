@@ -33,6 +33,7 @@
 #include "vga_int.h"
 #include "kvm.h"
 #include "qemu-kvm.h"
+#include "loader.h"
 
 /*
  * TODO:
@@ -171,41 +172,6 @@
 #define CIRRUS_MMIO_BRESENHAM_DIRECTION 0x38	// byte
 #define CIRRUS_MMIO_LINEDRAW_MODE     0x39	// byte
 #define CIRRUS_MMIO_BLTSTATUS         0x40	// byte
-
-// PCI 0x04: command(word), 0x06(word): status
-#define PCI_COMMAND_IOACCESS                0x0001
-#define PCI_COMMAND_MEMACCESS               0x0002
-#define PCI_COMMAND_BUSMASTER               0x0004
-#define PCI_COMMAND_SPECIALCYCLE            0x0008
-#define PCI_COMMAND_MEMWRITEINVALID         0x0010
-#define PCI_COMMAND_PALETTESNOOPING         0x0020
-#define PCI_COMMAND_PARITYDETECTION         0x0040
-#define PCI_COMMAND_ADDRESSDATASTEPPING     0x0080
-#define PCI_COMMAND_SERR                    0x0100
-#define PCI_COMMAND_BACKTOBACKTRANS         0x0200
-// PCI 0x08, 0xff000000 (0x09-0x0b:class,0x08:rev)
-#define PCI_CLASS_BASE_DISPLAY        0x03
-// PCI 0x08, 0x00ff0000
-#define PCI_CLASS_SUB_VGA             0x00
-// PCI 0x0c, 0x00ff0000 (0x0c:cacheline,0x0d:latency,0x0e:headertype,0x0f:Built-in self test)
-// 0x10-0x3f (headertype 00h)
-// PCI 0x10,0x14,0x18,0x1c,0x20,0x24: base address mapping registers
-//   0x10: MEMBASE, 0x14: IOBASE(hard-coded in XFree86 3.x)
-#define PCI_MAP_MEM                 0x0
-#define PCI_MAP_IO                  0x1
-#define PCI_MAP_MEM_ADDR_MASK       (~0xf)
-#define PCI_MAP_IO_ADDR_MASK        (~0x3)
-#define PCI_MAP_MEMFLAGS_32BIT      0x0
-#define PCI_MAP_MEMFLAGS_32BIT_1M   0x1
-#define PCI_MAP_MEMFLAGS_64BIT      0x4
-#define PCI_MAP_MEMFLAGS_CACHEABLE  0x8
-// PCI 0x28: cardbus CIS pointer
-// PCI 0x2c: subsystem vendor id, 0x2e: subsystem id
-// PCI 0x30: expansion ROM base address
-#define PCI_ROMBIOS_ENABLED         0x1
-// PCI 0x34: 0xffffff00=reserved, 0x000000ff=capabilities pointer
-// PCI 0x38: reserved
-// PCI 0x3c: 0x3c=int-line, 0x3d=int-pin, 0x3e=min-gnt, 0x3f=maax-lat
 
 #define CIRRUS_PNPMMIO_SIZE         0x1000
 
@@ -2629,9 +2595,11 @@ static void map_linear_vram(CirrusVGAState *s)
 static void unmap_linear_vram(CirrusVGAState *s)
 {
     vga_dirty_log_stop(&s->vga);
-    if (s->vga.map_addr && s->vga.lfb_addr && s->vga.lfb_end)
+    if (s->vga.map_addr && s->vga.lfb_addr && s->vga.lfb_end) {
         s->vga.map_addr = s->vga.map_end = 0;
-
+         cpu_register_physical_memory(s->vga.lfb_addr, s->vga.vram_size,
+                                      s->cirrus_linear_io_addr);
+    }
     cpu_register_physical_memory(isa_mem_base + 0xa0000, 0x20000,
                                  s->vga.vga_io_memory);
 
@@ -3029,7 +2997,6 @@ static const VMStateDescription vmstate_pci_cirrus_vga = {
     .version_id = 2,
     .minimum_version_id = 2,
     .minimum_version_id_old = 2,
-    .post_load = cirrus_post_load,
     .fields      = (VMStateField []) {
         VMSTATE_PCI_DEVICE(dev, PCICirrusVGAState),
         VMSTATE_STRUCT(cirrus_vga, PCICirrusVGAState, 0,
@@ -3173,7 +3140,8 @@ void isa_cirrus_vga_init(void)
     s->vga.ds = graphic_console_init(s->vga.update, s->vga.invalidate,
                                      s->vga.screen_dump, s->vga.text_update,
                                      &s->vga);
-    vmstate_register(0, &vmstate_cirrus_vga, s);
+    vmstate_register(NULL, 0, &vmstate_cirrus_vga, s);
+    rom_add_vga(VGABIOS_CIRRUS_FILENAME);
     /* XXX ISA-LFB support */
 }
 
@@ -3184,7 +3152,7 @@ void isa_cirrus_vga_init(void)
  ***************************************/
 
 static void cirrus_pci_lfb_map(PCIDevice *d, int region_num,
-			       uint32_t addr, uint32_t size, int type)
+			       pcibus_t addr, pcibus_t size, int type)
 {
     CirrusVGAState *s = &DO_UPCAST(PCICirrusVGAState, dev, d)->cirrus_vga;
 
@@ -3207,7 +3175,7 @@ static void cirrus_pci_lfb_map(PCIDevice *d, int region_num,
 }
 
 static void cirrus_pci_mmio_map(PCIDevice *d, int region_num,
-				uint32_t addr, uint32_t size, int type)
+				pcibus_t addr, pcibus_t size, int type)
 {
     CirrusVGAState *s = &DO_UPCAST(PCICirrusVGAState, dev, d)->cirrus_vga;
 
@@ -3224,7 +3192,7 @@ static void pci_cirrus_write_config(PCIDevice *d,
     vga_dirty_log_stop(&s->vga);
 
     pci_default_write_config(d, address, val, len);
-    if (s->vga.map_addr && d->io_regions[0].addr == -1)
+    if (s->vga.map_addr && d->io_regions[0].addr == PCI_BAR_UNMAPPED)
         s->vga.map_addr = 0;
     cirrus_update_memory_access(s);
 
@@ -3248,34 +3216,33 @@ static int pci_cirrus_vga_initfn(PCIDevice *dev)
      /* setup PCI */
      pci_config_set_vendor_id(pci_conf, PCI_VENDOR_ID_CIRRUS);
      pci_config_set_device_id(pci_conf, device_id);
-     pci_conf[0x04] = PCI_COMMAND_IOACCESS | PCI_COMMAND_MEMACCESS;
      pci_config_set_class(pci_conf, PCI_CLASS_DISPLAY_VGA);
-     pci_conf[PCI_HEADER_TYPE] = PCI_HEADER_TYPE_NORMAL;
 
      /* setup memory space */
      /* memory #0 LFB */
      /* memory #1 memory-mapped I/O */
      /* XXX: s->vga.vram_size must be a power of two */
      pci_register_bar((PCIDevice *)d, 0, 0x2000000,
-                      PCI_ADDRESS_SPACE_MEM_PREFETCH, cirrus_pci_lfb_map);
+                      PCI_BASE_ADDRESS_MEM_PREFETCH, cirrus_pci_lfb_map);
      if (device_id == CIRRUS_ID_CLGD5446) {
          pci_register_bar((PCIDevice *)d, 1, CIRRUS_PNPMMIO_SIZE,
-                          PCI_ADDRESS_SPACE_MEM, cirrus_pci_mmio_map);
+                          PCI_BASE_ADDRESS_SPACE_MEMORY, cirrus_pci_mmio_map);
      }
-     vmstate_register(0, &vmstate_pci_cirrus_vga, d);
-     /* XXX: ROM BIOS */
      return 0;
 }
 
 void pci_cirrus_vga_init(PCIBus *bus)
 {
-    pci_create_simple(bus, -1, "Cirrus VGA");
+    pci_create_simple(bus, -1, "cirrus-vga");
 }
 
 static PCIDeviceInfo cirrus_vga_info = {
-    .qdev.name    = "Cirrus VGA",
+    .qdev.name    = "cirrus-vga",
+    .qdev.desc    = "Cirrus CLGD 54xx VGA",
     .qdev.size    = sizeof(PCICirrusVGAState),
+    .qdev.vmsd    = &vmstate_pci_cirrus_vga,
     .init         = pci_cirrus_vga_initfn,
+    .romfile      = VGABIOS_CIRRUS_FILENAME,
     .config_write = pci_cirrus_write_config,
 };
 

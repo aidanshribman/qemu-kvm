@@ -336,6 +336,14 @@ int do_sigaction(int sig, const struct target_sigaction *act,
 #if !defined(TARGET_ABI_MIPSN32) && !defined(TARGET_ABI_MIPSN64)
 #define TARGET_SA_RESTORER	0x04000000	/* Only for O32 */
 #endif
+#elif defined(TARGET_ALPHA)
+#define TARGET_SA_ONSTACK	0x00000001
+#define TARGET_SA_RESTART	0x00000002
+#define TARGET_SA_NOCLDSTOP	0x00000004
+#define TARGET_SA_NODEFER	0x00000008
+#define TARGET_SA_RESETHAND	0x00000010
+#define TARGET_SA_NOCLDWAIT	0x00000020 /* not supported yet */
+#define TARGET_SA_SIGINFO	0x00000040
 #else
 #define TARGET_SA_NOCLDSTOP	0x00000001
 #define TARGET_SA_NOCLDWAIT	0x00000002 /* not supported yet */
@@ -472,8 +480,28 @@ int do_sigaction(int sig, const struct target_sigaction *act,
 
 #endif
 
-#if defined(TARGET_MIPS)
+#if defined(TARGET_ALPHA)
+struct target_old_sigaction {
+    abi_ulong _sa_handler;
+    abi_ulong sa_mask;
+    abi_ulong sa_flags;
+};
 
+struct target_rt_sigaction {
+    abi_ulong _sa_handler;
+    abi_ulong sa_flags;
+    target_sigset_t sa_mask;
+};
+
+/* This is the struct used inside the kernel.  The ka_restorer
+   field comes from the 5th argument to sys_rt_sigaction.  */
+struct target_sigaction {
+    abi_ulong _sa_handler;
+    abi_ulong sa_flags;
+    target_sigset_t sa_mask;
+    abi_ulong sa_restorer;
+};
+#elif defined(TARGET_MIPS)
 struct target_sigaction {
 	uint32_t	sa_flags;
 #if defined(TARGET_ABI_MIPSN32)
@@ -483,7 +511,6 @@ struct target_sigaction {
 #endif
 	target_sigset_t	sa_mask;
 };
-
 #else
 struct target_old_sigaction {
         abi_ulong _sa_handler;
@@ -650,6 +677,14 @@ struct target_rlimit {
         abi_ulong   rlim_max;
 };
 
+#if defined(TARGET_ALPHA)
+#define TARGET_RLIM_INFINITY	0x7fffffffffffffffull
+#elif defined(TARGET_MIPS) || defined(TARGET_SPARC)
+#define TARGET_RLIM_INFINITY	0x7fffffffUL
+#else
+#define TARGET_RLIM_INFINITY	((target_ulong)~0UL)
+#endif
+
 struct target_pollfd {
     int fd;           /* file descriptor */
     short events;     /* requested events */
@@ -660,6 +695,9 @@ struct target_pollfd {
 #define TARGET_KIOCSOUND       0x4B2F	/* start sound generation (0 for off) */
 #define TARGET_KDMKTONE	       0x4B30	/* generate tone */
 #define TARGET_KDGKBTYPE       0x4b33
+#define TARGET_KDSETMODE       0x4b3a
+#define TARGET_KDGKBMODE       0x4b44
+#define TARGET_KDSKBMODE       0x4b45
 #define TARGET_KDGKBENT	       0x4B46	/* gets one entry in translation table */
 #define TARGET_KDGKBSENT       0x4B48	/* gets one function key string entry */
 
@@ -874,6 +912,19 @@ struct target_pollfd {
 #define TARGET_LOOP_GET_STATUS64      0x4C05
 #define TARGET_LOOP_CHANGE_FD         0x4C06
 
+/* fb ioctls */
+#define TARGET_FBIOGET_VSCREENINFO    0x4600
+#define TARGET_FBIOPUT_VSCREENINFO    0x4601
+#define TARGET_FBIOGET_FSCREENINFO    0x4602
+
+/* vt ioctls */
+#define TARGET_VT_OPENQRY             0x5600
+#define TARGET_VT_GETSTATE            0x5603
+#define TARGET_VT_ACTIVATE            0x5606
+#define TARGET_VT_WAITACTIVE          0x5607
+#define TARGET_VT_LOCKSWITCH          0x560b
+#define TARGET_VT_UNLOCKSWITCH        0x560c
+
 /* from asm/termbits.h */
 
 #define TARGET_NCC 8
@@ -894,6 +945,12 @@ struct target_winsize {
 };
 
 #include "termbits.h"
+
+#if defined(TARGET_MIPS)
+#define TARGET_PROT_SEM         0x10
+#else
+#define TARGET_PROT_SEM         0x08
+#endif
 
 /* Common */
 #define TARGET_MAP_SHARED	0x01		/* Share changes */
@@ -1187,8 +1244,8 @@ struct __attribute__((__packed__)) target_stat64 {
 	unsigned long long __pad0;
 	long long      st_size;
 	int	       st_blksize;
-	long long      st_blocks;	/* Number 512-byte blocks allocated. */
 	unsigned int   __pad1;
+	long long      st_blocks;	/* Number 512-byte blocks allocated. */
 	int	       target_st_atime;
         unsigned int   target_st_atime_nsec;
 	int	       target_st_mtime;

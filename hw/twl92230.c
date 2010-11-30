@@ -183,16 +183,6 @@ static void menelaus_reset(i2c_slave *i2c)
     menelaus_update(s);
 }
 
-static inline uint8_t to_bcd(int val)
-{
-    return ((val / 10) << 4) | (val % 10);
-}
-
-static inline int from_bcd(uint8_t val)
-{
-    return ((val >> 4) * 10) + (val & 0x0f);
-}
-
 static void menelaus_gpio_set(void *opaque, int line, int level)
 {
     MenelausState *s = (MenelausState *) opaque;
@@ -766,7 +756,7 @@ static void put_int32_as_uint16(QEMUFile *f, void *pv, size_t size)
     qemu_put_be16(f, *v);
 }
 
-const VMStateInfo vmstate_hack_int32_as_uint16 = {
+static const VMStateInfo vmstate_hack_int32_as_uint16 = {
     .name = "int32_as_uint16",
     .get  = get_int32_as_uint16,
     .put  = put_int32_as_uint16,
@@ -865,13 +855,13 @@ static int twl92230_init(i2c_slave *i2c)
 
     menelaus_reset(&s->i2c);
 
-    vmstate_register(-1, &vmstate_menelaus, s);
     return 0;
 }
 
 static I2CSlaveInfo twl92230_info = {
     .qdev.name ="twl92230",
     .qdev.size = sizeof(MenelausState),
+    .qdev.vmsd = &vmstate_menelaus,
     .init = twl92230_init,
     .event = menelaus_event,
     .recv = menelaus_rx,

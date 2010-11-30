@@ -37,6 +37,22 @@
     do { } while (0)
 #endif
 
+/* XXX We have a race condition where we actually have a level triggered
+ *     interrupt, but the infrastructure can't expose that yet, so the guest
+ *     takes but ignores it, goes to sleep and never gets notified that there's
+ *     still an interrupt pending.
+ *
+ *     As a quick workaround, let's just wake up again 20 ms after we injected
+ *     an interrupt. That way we can assure that we're always reinjecting
+ *     interrupts in case the guest swallowed them.
+ */
+static QEMUTimer *idle_timer;
+
+static void kvm_kick_env(void *env)
+{
+    qemu_cpu_kick(env);
+}
+
 int kvm_arch_init(KVMState *s, int smp_cpus)
 {
     return 0;
@@ -50,10 +66,16 @@ int kvm_arch_init_vcpu(CPUState *cenv)
     sregs.pvr = cenv->spr[SPR_PVR];
     ret = kvm_vcpu_ioctl(cenv, KVM_SET_SREGS, &sregs);
 
+    idle_timer = qemu_new_timer(vm_clock, kvm_kick_env, cenv);
+
     return ret;
 }
 
-int kvm_arch_put_registers(CPUState *env)
+void kvm_arch_reset_vcpu(CPUState *env)
+{
+}
+
+int kvm_arch_put_registers(CPUState *env, int level)
 {
     struct kvm_regs regs;
     int ret;
@@ -94,9 +116,14 @@ int kvm_arch_put_registers(CPUState *env)
 int kvm_arch_get_registers(CPUState *env)
 {
     struct kvm_regs regs;
+    struct kvm_sregs sregs;
     uint32_t i, ret;
 
     ret = kvm_vcpu_ioctl(env, KVM_GET_REGS, &regs);
+    if (ret < 0)
+        return ret;
+
+    ret = kvm_vcpu_ioctl(env, KVM_GET_SREGS, &sregs);
     if (ret < 0)
         return ret;
 
@@ -120,6 +147,33 @@ int kvm_arch_get_registers(CPUState *env)
 
     for (i = 0;i < 32; i++)
         env->gpr[i] = regs.gpr[i];
+
+#ifdef KVM_CAP_PPC_SEGSTATE
+    if (kvm_check_extension(env->kvm_state, KVM_CAP_PPC_SEGSTATE)) {
+        env->sdr1 = sregs.u.s.sdr1;
+
+        /* Sync SLB */
+#ifdef TARGET_PPC64
+        for (i = 0; i < 64; i++) {
+            ppc_store_slb(env, sregs.u.s.ppc64.slb[i].slbe,
+                               sregs.u.s.ppc64.slb[i].slbv);
+        }
+#endif
+
+        /* Sync SRs */
+        for (i = 0; i < 16; i++) {
+            env->sr[i] = sregs.u.s.ppc32.sr[i];
+        }
+
+        /* Sync BATs */
+        for (i = 0; i < 8; i++) {
+            env->DBAT[0][i] = sregs.u.s.ppc32.dbat[i] & 0xffffffff;
+            env->DBAT[1][i] = sregs.u.s.ppc32.dbat[i] >> 32;
+            env->IBAT[0][i] = sregs.u.s.ppc32.ibat[i] & 0xffffffff;
+            env->IBAT[1][i] = sregs.u.s.ppc32.ibat[i] >> 32;
+        }
+    }
+#endif
 
     return 0;
 }
@@ -153,6 +207,10 @@ int kvm_arch_pre_run(CPUState *env, struct kvm_run *run)
         r = kvm_vcpu_ioctl(env, KVM_INTERRUPT, &irq);
         if (r < 0)
             printf("cpu %d fail inject %x\n", env->cpu_index, irq);
+
+        /* Always wake up soon in case the interrupt was level based */
+        qemu_mod_timer(idle_timer, qemu_get_clock(vm_clock) +
+                       (get_ticks_per_sec() / 50));
     }
 
     /* We don't know if there are more interrupts pending after this. However,
@@ -162,6 +220,11 @@ int kvm_arch_pre_run(CPUState *env, struct kvm_run *run)
 }
 
 int kvm_arch_post_run(CPUState *env, struct kvm_run *run)
+{
+    return 0;
+}
+
+int kvm_arch_process_irqchip_events(CPUState *env)
 {
     return 0;
 }
@@ -216,3 +279,55 @@ int kvm_arch_handle_exit(CPUState *env, struct kvm_run *run)
     return ret;
 }
 
+static int read_cpuinfo(const char *field, char *value, int len)
+{
+    FILE *f;
+    int ret = -1;
+    int field_len = strlen(field);
+    char line[512];
+
+    f = fopen("/proc/cpuinfo", "r");
+    if (!f) {
+        return -1;
+    }
+
+    do {
+        if(!fgets(line, sizeof(line), f)) {
+            break;
+        }
+        if (!strncmp(line, field, field_len)) {
+            strncpy(value, line, len);
+            ret = 0;
+            break;
+        }
+    } while(*line);
+
+    fclose(f);
+
+    return ret;
+}
+
+uint32_t kvmppc_get_tbfreq(void)
+{
+    char line[512];
+    char *ns;
+    uint32_t retval = get_ticks_per_sec();
+
+    if (read_cpuinfo("timebase", line, sizeof(line))) {
+        return retval;
+    }
+
+    if (!(ns = strchr(line, ':'))) {
+        return retval;
+    }
+
+    ns++;
+
+    retval = atoi(ns);
+    return retval;
+}
+
+bool kvm_arch_stop_on_emulation_error(CPUState *env)
+{
+    return true;
+}

@@ -206,7 +206,6 @@ static void palmte_init(ram_addr_t ram_size,
     static uint32_t cs1val = 0x0000e1a0;
     static uint32_t cs2val = 0x0000e1a0;
     static uint32_t cs3val = 0xe1a0e1a0;
-    ram_addr_t phys_flash;
     int rom_size, rom_loaded = 0;
     DisplayState *ds = get_displaystate();
 
@@ -214,7 +213,8 @@ static void palmte_init(ram_addr_t ram_size,
 
     /* External Flash (EMIFS) */
     cpu_register_physical_memory(OMAP_CS0_BASE, flash_size,
-                    (phys_flash = qemu_ram_alloc(flash_size)) | IO_MEM_ROM);
+                                 qemu_ram_alloc(NULL, "palmte.flash",
+                                                flash_size) | IO_MEM_ROM);
 
     io = cpu_register_io_memory(static_readfn, static_writefn, &cs0val);
     cpu_register_physical_memory(OMAP_CS0_BASE + flash_size,
@@ -244,7 +244,6 @@ static void palmte_init(ram_addr_t ram_size,
             rom_size = load_image_targphys(option_rom[0], OMAP_CS0_BASE,
                                            flash_size);
             rom_loaded = 1;
-            cpu->env->regs[15] = 0x00000000;
         }
         if (rom_size < 0) {
             fprintf(stderr, "%s: error loading '%s'\n",
@@ -259,9 +258,6 @@ static void palmte_init(ram_addr_t ram_size,
 
     /* Load the kernel.  */
     if (kernel_filename) {
-        /* Start at bootloader.  */
-        cpu->env->regs[15] = palmte_binfo.loader_start;
-
         palmte_binfo.kernel_filename = kernel_filename;
         palmte_binfo.kernel_cmdline = kernel_cmdline;
         palmte_binfo.initrd_filename = initrd_filename;

@@ -113,7 +113,7 @@ static const uint8_t qemu_hub_config_descriptor[] = {
 	0x01,       /*  u8  bNumInterfaces; (1) */
 	0x01,       /*  u8  bConfigurationValue; */
 	0x00,       /*  u8  iConfiguration; */
-	0xc0,       /*  u8  bmAttributes;
+	0xe0,       /*  u8  bmAttributes;
 				 Bit 7: must be set,
 				     6: Self-powered,
 				     5: Remote wakeup,
@@ -366,11 +366,10 @@ static int usb_hub_handle_control(USBDevice *dev, int request, int value,
         {
             unsigned int n = index - 1;
             USBHubPort *port;
-            USBDevice *dev;
+
             if (n >= s->nb_ports)
                 goto fail;
             port = &s->ports[n];
-            dev = port->port.dev;
             switch(value) {
             case PORT_ENABLE:
                 port->wPortStatus &= ~PORT_STAT_ENABLE;
@@ -544,7 +543,8 @@ static int usb_hub_initfn(USBDevice *dev)
 }
 
 static struct USBDeviceInfo hub_info = {
-    .qdev.name      = "QEMU USB Hub",
+    .product_desc   = "QEMU USB Hub",
+    .qdev.name      = "usb-hub",
     .qdev.size      = sizeof(USBHubState),
     .init           = usb_hub_initfn,
     .handle_packet  = usb_hub_handle_packet,

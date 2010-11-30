@@ -17,9 +17,8 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 #include <hw/hw.h>
-#include "sysemu.h"
 #include "dma.h"
-
+#include "qemu-error.h"
 #include <hw/ide/internal.h>
 
 /* --------------------------------- */
@@ -40,8 +39,8 @@ static int ide_qdev_init(DeviceState *qdev, DeviceInfo *base)
     IDEDeviceInfo *info = DO_UPCAST(IDEDeviceInfo, qdev, base);
     IDEBus *bus = DO_UPCAST(IDEBus, qbus, qdev->parent_bus);
 
-    if (!dev->dinfo) {
-        fprintf(stderr, "%s: no drive specified\n", qdev->info->name);
+    if (!dev->conf.bs) {
+        error_report("No drive specified");
         goto err;
     }
     if (dev->unit == -1) {
@@ -50,19 +49,20 @@ static int ide_qdev_init(DeviceState *qdev, DeviceInfo *base)
     switch (dev->unit) {
     case 0:
         if (bus->master) {
-            fprintf(stderr, "ide: tried to assign master twice\n");
+            error_report("IDE unit %d is in use", dev->unit);
             goto err;
         }
         bus->master = dev;
         break;
     case 1:
         if (bus->slave) {
-            fprintf(stderr, "ide: tried to assign slave twice\n");
+            error_report("IDE unit %d is in use", dev->unit);
             goto err;
         }
         bus->slave = dev;
         break;
     default:
+        error_report("Invalid IDE unit %d", dev->unit);
         goto err;
     }
     return info->init(dev);
@@ -84,10 +84,16 @@ IDEDevice *ide_create_drive(IDEBus *bus, int unit, DriveInfo *drive)
 
     dev = qdev_create(&bus->qbus, "ide-drive");
     qdev_prop_set_uint32(dev, "unit", unit);
-    qdev_prop_set_drive(dev, "drive", drive);
-    if (qdev_init(dev) < 0)
-        return NULL;
+    qdev_prop_set_drive_nofail(dev, "drive", drive->bdrv);
+    qdev_init_nofail(dev);
     return DO_UPCAST(IDEDevice, qdev, dev);
+}
+
+void ide_get_bs(BlockDriverState *bs[], BusState *qbus)
+{
+    IDEBus *bus = DO_UPCAST(IDEBus, qbus, qbus);
+    bs[0] = bus->master ? bus->master->conf.bs : NULL;
+    bs[1] = bus->slave  ? bus->slave->conf.bs  : NULL;
 }
 
 /* --------------------------------- */
@@ -99,7 +105,29 @@ typedef struct IDEDrive {
 static int ide_drive_initfn(IDEDevice *dev)
 {
     IDEBus *bus = DO_UPCAST(IDEBus, qbus, dev->qdev.parent_bus);
-    ide_init_drive(bus->ifs + dev->unit, dev->dinfo);
+    IDEState *s = bus->ifs + dev->unit;
+    const char *serial;
+    DriveInfo *dinfo;
+
+    serial = dev->serial;
+    if (!serial) {
+        /* try to fall back to value set with legacy -drive serial=... */
+        dinfo = drive_get_by_blockdev(dev->conf.bs);
+        if (*dinfo->serial) {
+            serial = dinfo->serial;
+        }
+    }
+
+    if (ide_init_drive(s, dev->conf.bs, dev->version, serial) < 0) {
+        return -1;
+    }
+
+    if (!dev->version) {
+        dev->version = qemu_strdup(s->version);
+    }
+    if (!dev->serial) {
+        dev->serial = qemu_strdup(s->drive_serial_str);
+    }
     return 0;
 }
 
@@ -109,7 +137,9 @@ static IDEDeviceInfo ide_drive_info = {
     .init       = ide_drive_initfn,
     .qdev.props = (Property[]) {
         DEFINE_PROP_UINT32("unit", IDEDrive, dev.unit, -1),
-        DEFINE_PROP_DRIVE("drive", IDEDrive, dev.dinfo),
+        DEFINE_BLOCK_PROPERTIES(IDEDrive, dev.conf),
+        DEFINE_PROP_STRING("ver",  IDEDrive, dev.version),
+        DEFINE_PROP_STRING("serial",  IDEDrive, dev.serial),
         DEFINE_PROP_END_OF_LIST(),
     }
 };

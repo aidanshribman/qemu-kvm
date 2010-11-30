@@ -51,7 +51,7 @@ typedef struct {
 
     uint8_t ctrl;
     uint16_t io;
-    int cycle;
+    uint8_t cycle;
 } MicroDriveState;
 
 /* Register bitfields */
@@ -110,7 +110,7 @@ static void md_reset(MicroDriveState *s)
     s->pins = 0;
     s->cycle = 0;
     s->ctrl = 0;
-    ide_reset(s->bus.ifs);
+    ide_bus_reset(&s->bus);
 }
 
 static uint8_t md_attr_read(void *opaque, uint32_t at)
@@ -300,48 +300,23 @@ static void md_common_write(void *opaque, uint32_t at, uint16_t value)
     }
 }
 
-static void md_save(QEMUFile *f, void *opaque)
-{
-    MicroDriveState *s = opaque;
-    int i;
-
-    qemu_put_8s(f, &s->opt);
-    qemu_put_8s(f, &s->stat);
-    qemu_put_8s(f, &s->pins);
-
-    qemu_put_8s(f, &s->ctrl);
-    qemu_put_be16s(f, &s->io);
-    qemu_put_byte(f, s->cycle);
-
-    idebus_save(f, &s->bus);
-
-    for (i = 0; i < 2; i ++)
-        ide_save(f, &s->bus.ifs[i]);
-}
-
-static int md_load(QEMUFile *f, void *opaque, int version_id)
-{
-    MicroDriveState *s = opaque;
-    int i;
-
-    if (version_id != 0 && version_id != 3)
-        return -EINVAL;
-
-    qemu_get_8s(f, &s->opt);
-    qemu_get_8s(f, &s->stat);
-    qemu_get_8s(f, &s->pins);
-
-    qemu_get_8s(f, &s->ctrl);
-    qemu_get_be16s(f, &s->io);
-    s->cycle = qemu_get_byte(f);
-
-    idebus_load(f, &s->bus, version_id);
-
-    for (i = 0; i < 2; i ++)
-        ide_load(f, &s->bus.ifs[i], version_id);
-
-    return 0;
-}
+static const VMStateDescription vmstate_microdrive = {
+    .name = "microdrive",
+    .version_id = 3,
+    .minimum_version_id = 0,
+    .minimum_version_id_old = 0,
+    .fields      = (VMStateField []) {
+        VMSTATE_UINT8(opt, MicroDriveState),
+        VMSTATE_UINT8(stat, MicroDriveState),
+        VMSTATE_UINT8(pins, MicroDriveState),
+        VMSTATE_UINT8(ctrl, MicroDriveState),
+        VMSTATE_UINT16(io, MicroDriveState),
+        VMSTATE_UINT8(cycle, MicroDriveState),
+        VMSTATE_IDE_BUS(bus, MicroDriveState),
+        VMSTATE_IDE_DRIVES(bus.ifs, MicroDriveState),
+        VMSTATE_END_OF_LIST()
+    }
+};
 
 static const uint8_t dscm1xxxx_cis[0x14a] = {
     [0x000] = CISTPL_DEVICE,	/* 5V Device Information */
@@ -564,12 +539,13 @@ PCMCIACardState *dscm1xxxx_init(DriveInfo *bdrv)
     md->card.cis = dscm1xxxx_cis;
     md->card.cis_len = sizeof(dscm1xxxx_cis);
 
-    ide_init2(&md->bus, bdrv, NULL, qemu_allocate_irqs(md_set_irq, md, 1)[0]);
-    md->bus.ifs[0].is_cf = 1;
+    ide_init2_with_non_qdev_drives(&md->bus, bdrv, NULL,
+                                   qemu_allocate_irqs(md_set_irq, md, 1)[0]);
+    md->bus.ifs[0].drive_kind = IDE_CFATA;
     md->bus.ifs[0].mdata_size = METADATA_SIZE;
     md->bus.ifs[0].mdata_storage = (uint8_t *) qemu_mallocz(METADATA_SIZE);
 
-    register_savevm("microdrive", -1, 3, md_save, md_load, md);
+    vmstate_register(NULL, -1, &vmstate_microdrive, md);
 
     return &md->card;
 }

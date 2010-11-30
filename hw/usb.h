@@ -91,6 +91,10 @@
 #define EndpointRequest ((USB_DIR_IN|USB_TYPE_STANDARD|USB_RECIP_ENDPOINT)<<8)
 #define EndpointOutRequest \
         ((USB_DIR_OUT|USB_TYPE_STANDARD|USB_RECIP_ENDPOINT)<<8)
+#define ClassInterfaceRequest \
+        ((USB_DIR_IN|USB_TYPE_CLASS|USB_RECIP_INTERFACE)<<8)
+#define ClassInterfaceOutRequest \
+        ((USB_DIR_OUT|USB_TYPE_CLASS|USB_RECIP_INTERFACE)<<8)
 
 #define USB_REQ_GET_STATUS		0x00
 #define USB_REQ_CLEAR_FEATURE		0x01
@@ -132,7 +136,8 @@ struct USBDevice {
 
     int speed;
     uint8_t addr;
-    char devname[32];
+    char product_desc[32];
+    int auto_attach;
     int attached;
 
     int state;
@@ -183,6 +188,12 @@ struct USBDeviceInfo {
      * Returns length or one of the USB_RET_ codes.
      */
     int (*handle_data)(USBDevice *dev, USBPacket *p);
+
+    const char *product_desc;
+
+    /* handle legacy -usbdevice command line options */
+    const char *usbdevice_name;
+    USBDevice *(*usbdevice_init)(const char *params);
 };
 
 typedef void (*usb_attachfn)(USBPort *port, USBDevice *dev);
@@ -251,18 +262,8 @@ void usb_host_info(Monitor *mon);
 /* usb-hid.c */
 void usb_hid_datain_cb(USBDevice *dev, void *opaque, void (*datain)(void *));
 
-/* usb-msd.c */
-USBDevice *usb_msd_init(const char *filename);
-BlockDriverState *usb_msd_get_bdrv(USBDevice *dev);
-
-/* usb-net.c */
-USBDevice *usb_net_init(NICInfo *nd);
-
 /* usb-bt.c */
 USBDevice *usb_bt_init(HCIInfo *hci);
-
-/* usb-serial.c */
-USBDevice *usb_serial_init(const char *filename);
 
 /* usb ports of the VM */
 
@@ -309,6 +310,7 @@ void usb_qdev_register(USBDeviceInfo *info);
 void usb_qdev_register_many(USBDeviceInfo *info);
 USBDevice *usb_create(USBBus *bus, const char *name);
 USBDevice *usb_create_simple(USBBus *bus, const char *name);
+USBDevice *usbdevice_create(const char *cmdline);
 void usb_register_port(USBBus *bus, USBPort *port, void *opaque, int index,
                        usb_attachfn attach);
 void usb_unregister_port(USBBus *bus, USBPort *port);

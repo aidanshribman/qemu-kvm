@@ -11,9 +11,10 @@
 #include "qemu-option.h"
 #include "qemu-config.h"
 #include "usb.h"
-#include "block.h"
-#include "scsi-disk.h"
+#include "scsi.h"
 #include "console.h"
+#include "monitor.h"
+#include "sysemu.h"
 
 //#define DEBUG_MSD
 
@@ -46,7 +47,7 @@ typedef struct {
     uint32_t residue;
     uint32_t tag;
     SCSIBus bus;
-    DriveInfo *dinfo;
+    BlockConf conf;
     SCSIDevice *scsi_dev;
     int result;
     /* For async completion.  */
@@ -320,18 +321,18 @@ static int usb_msd_handle_control(USBDevice *dev, int request, int value,
         ret = 0;
         break;
     case EndpointOutRequest | USB_REQ_CLEAR_FEATURE:
-        if (value == 0 && index != 0x81) { /* clear ep halt */
-            goto fail;
-        }
+        ret = 0;
+        break;
+    case InterfaceOutRequest | USB_REQ_SET_INTERFACE:
         ret = 0;
         break;
         /* Class specific requests.  */
-    case MassStorageReset:
+    case ClassInterfaceOutRequest | MassStorageReset:
         /* Reset state ready for the next CBW.  */
         s->mode = USB_MSDM_CBW;
         ret = 0;
         break;
-    case GetMaxLun:
+    case ClassInterfaceRequest | GetMaxLun:
         data[0] = 0;
         ret = 1;
         break;
@@ -508,24 +509,60 @@ static int usb_msd_handle_data(USBDevice *dev, USBPacket *p)
     return ret;
 }
 
+static void usb_msd_password_cb(void *opaque, int err)
+{
+    MSDState *s = opaque;
+
+    if (!err)
+        usb_device_attach(&s->dev);
+    else
+        qdev_unplug(&s->dev.qdev);
+}
+
 static int usb_msd_initfn(USBDevice *dev)
 {
     MSDState *s = DO_UPCAST(MSDState, dev, dev);
+    BlockDriverState *bs = s->conf.bs;
 
-    if (!s->dinfo || !s->dinfo->bdrv) {
-        qemu_error("usb-msd: drive property not set\n");
+    if (!bs) {
+        error_report("usb-msd: drive property not set");
         return -1;
     }
 
+    /*
+     * Hack alert: this pretends to be a block device, but it's really
+     * a SCSI bus that can serve only a single device, which it
+     * creates automatically.  But first it needs to detach from its
+     * blockdev, or else scsi_bus_legacy_add_drive() dies when it
+     * attaches again.
+     *
+     * The hack is probably a bad idea.
+     */
+    bdrv_detach(bs, &s->dev.qdev);
+    s->conf.bs = NULL;
+
     s->dev.speed = USB_SPEED_FULL;
     scsi_bus_new(&s->bus, &s->dev.qdev, 0, 1, usb_msd_command_complete);
-    s->scsi_dev = scsi_bus_legacy_add_drive(&s->bus, s->dinfo, 0);
+    s->scsi_dev = scsi_bus_legacy_add_drive(&s->bus, bs, 0);
+    if (!s->scsi_dev) {
+        return -1;
+    }
     s->bus.qbus.allow_hotplug = 0;
     usb_msd_handle_reset(dev);
+
+    if (bdrv_key_required(bs)) {
+        if (cur_mon) {
+            monitor_read_bdrv_key_start(cur_mon, bs, usb_msd_password_cb, s);
+            s->dev.auto_attach = 0;
+        } else {
+            autostart = 0;
+        }
+    }
+
     return 0;
 }
 
-USBDevice *usb_msd_init(const char *filename)
+static USBDevice *usb_msd_init(const char *filename)
 {
     static int nr=0;
     char id[8];
@@ -562,39 +599,40 @@ USBDevice *usb_msd_init(const char *filename)
     qemu_opt_set(opts, "if", "none");
 
     /* create host drive */
-    dinfo = drive_init(opts, NULL, &fatal_error);
+    dinfo = drive_init(opts, 0, &fatal_error);
     if (!dinfo) {
         qemu_opts_del(opts);
         return NULL;
     }
 
     /* create guest device */
-    dev = usb_create(NULL /* FIXME */, "QEMU USB MSD");
-    qdev_prop_set_drive(&dev->qdev, "drive", dinfo);
+    dev = usb_create(NULL /* FIXME */, "usb-storage");
+    if (!dev) {
+        return NULL;
+    }
+    if (qdev_prop_set_drive(&dev->qdev, "drive", dinfo->bdrv) < 0) {
+        qdev_free(&dev->qdev);
+        return NULL;
+    }
     if (qdev_init(&dev->qdev) < 0)
         return NULL;
 
     return dev;
 }
 
-BlockDriverState *usb_msd_get_bdrv(USBDevice *dev)
-{
-    MSDState *s = (MSDState *)dev;
-
-    return s->dinfo->bdrv;
-}
-
 static struct USBDeviceInfo msd_info = {
-    .qdev.name      = "QEMU USB MSD",
-    .qdev.alias     = "usb-storage",
+    .product_desc   = "QEMU USB MSD",
+    .qdev.name      = "usb-storage",
     .qdev.size      = sizeof(MSDState),
     .init           = usb_msd_initfn,
     .handle_packet  = usb_generic_handle_packet,
     .handle_reset   = usb_msd_handle_reset,
     .handle_control = usb_msd_handle_control,
     .handle_data    = usb_msd_handle_data,
+    .usbdevice_name = "disk",
+    .usbdevice_init = usb_msd_init,
     .qdev.props     = (Property[]) {
-        DEFINE_PROP_DRIVE("drive", MSDState, dinfo),
+        DEFINE_BLOCK_PROPERTIES(MSDState, conf),
         DEFINE_PROP_END_OF_LIST(),
     },
 };

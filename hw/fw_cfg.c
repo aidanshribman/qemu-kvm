@@ -25,6 +25,7 @@
 #include "sysemu.h"
 #include "isa.h"
 #include "fw_cfg.h"
+#include "sysbus.h"
 
 /* debug firmware config */
 //#define DEBUG_FW_CFG
@@ -38,18 +39,21 @@
 
 #define FW_CFG_SIZE 2
 
-typedef struct _FWCfgEntry {
-    uint16_t len;
+typedef struct FWCfgEntry {
+    uint32_t len;
     uint8_t *data;
     void *callback_opaque;
     FWCfgCallback callback;
 } FWCfgEntry;
 
-typedef struct _FWCfgState {
+struct FWCfgState {
+    SysBusDevice busdev;
+    uint32_t ctl_iobase, data_iobase;
     FWCfgEntry entries[2][FW_CFG_MAX_ENTRY];
+    FWCfgFiles *files;
     uint16_t cur_entry;
-    uint16_t cur_offset;
-} FWCfgState;
+    uint32_t cur_offset;
+};
 
 static void fw_cfg_write(FWCfgState *s, uint8_t value)
 {
@@ -157,28 +161,61 @@ static CPUWriteMemoryFunc * const fw_cfg_data_mem_write[3] = {
     NULL,
 };
 
-static void fw_cfg_reset(void *opaque)
+static void fw_cfg_reset(DeviceState *d)
 {
-    FWCfgState *s = opaque;
+    FWCfgState *s = DO_UPCAST(FWCfgState, busdev.qdev, d);
 
     fw_cfg_select(s, 0);
 }
 
+/* Save restore 32 bit int as uint16_t
+   This is a Big hack, but it is how the old state did it.
+   Or we broke compatibility in the state, or we can't use struct tm
+ */
+
+static int get_uint32_as_uint16(QEMUFile *f, void *pv, size_t size)
+{
+    uint32_t *v = pv;
+    *v = qemu_get_be16(f);
+    return 0;
+}
+
+static void put_unused(QEMUFile *f, void *pv, size_t size)
+{
+    fprintf(stderr, "uint32_as_uint16 is only used for backward compatibility.\n");
+    fprintf(stderr, "This functions shouldn't be called.\n");
+}
+
+static const VMStateInfo vmstate_hack_uint32_as_uint16 = {
+    .name = "int32_as_uint16",
+    .get  = get_uint32_as_uint16,
+    .put  = put_unused,
+};
+
+#define VMSTATE_UINT16_HACK(_f, _s, _t)                                    \
+    VMSTATE_SINGLE_TEST(_f, _s, _t, 0, vmstate_hack_uint32_as_uint16, uint32_t)
+
+
+static bool is_version_1(void *opaque, int version_id)
+{
+    return version_id == 1;
+}
+
 static const VMStateDescription vmstate_fw_cfg = {
     .name = "fw_cfg",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .minimum_version_id_old = 1,
     .fields      = (VMStateField []) {
         VMSTATE_UINT16(cur_entry, FWCfgState),
-        VMSTATE_UINT16(cur_offset, FWCfgState),
+        VMSTATE_UINT16_HACK(cur_offset, FWCfgState, is_version_1),
+        VMSTATE_UINT32_V(cur_offset, FWCfgState, 2),
         VMSTATE_END_OF_LIST()
     }
 };
 
-int fw_cfg_add_bytes(void *opaque, uint16_t key, uint8_t *data, uint16_t len)
+int fw_cfg_add_bytes(FWCfgState *s, uint16_t key, uint8_t *data, uint32_t len)
 {
-    FWCfgState *s = opaque;
     int arch = !!(key & FW_CFG_ARCH_LOCAL);
 
     key &= FW_CFG_ENTRY_MASK;
@@ -192,37 +229,36 @@ int fw_cfg_add_bytes(void *opaque, uint16_t key, uint8_t *data, uint16_t len)
     return 1;
 }
 
-int fw_cfg_add_i16(void *opaque, uint16_t key, uint16_t value)
+int fw_cfg_add_i16(FWCfgState *s, uint16_t key, uint16_t value)
 {
     uint16_t *copy;
 
     copy = qemu_malloc(sizeof(value));
     *copy = cpu_to_le16(value);
-    return fw_cfg_add_bytes(opaque, key, (uint8_t *)copy, sizeof(value));
+    return fw_cfg_add_bytes(s, key, (uint8_t *)copy, sizeof(value));
 }
 
-int fw_cfg_add_i32(void *opaque, uint16_t key, uint32_t value)
+int fw_cfg_add_i32(FWCfgState *s, uint16_t key, uint32_t value)
 {
     uint32_t *copy;
 
     copy = qemu_malloc(sizeof(value));
     *copy = cpu_to_le32(value);
-    return fw_cfg_add_bytes(opaque, key, (uint8_t *)copy, sizeof(value));
+    return fw_cfg_add_bytes(s, key, (uint8_t *)copy, sizeof(value));
 }
 
-int fw_cfg_add_i64(void *opaque, uint16_t key, uint64_t value)
+int fw_cfg_add_i64(FWCfgState *s, uint16_t key, uint64_t value)
 {
     uint64_t *copy;
 
     copy = qemu_malloc(sizeof(value));
     *copy = cpu_to_le64(value);
-    return fw_cfg_add_bytes(opaque, key, (uint8_t *)copy, sizeof(value));
+    return fw_cfg_add_bytes(s, key, (uint8_t *)copy, sizeof(value));
 }
 
-int fw_cfg_add_callback(void *opaque, uint16_t key, FWCfgCallback callback,
+int fw_cfg_add_callback(FWCfgState *s, uint16_t key, FWCfgCallback callback,
                         void *callback_opaque, uint8_t *data, size_t len)
 {
-    FWCfgState *s = opaque;
     int arch = !!(key & FW_CFG_ARCH_LOCAL);
 
     if (!(key & FW_CFG_WRITE_CHANNEL))
@@ -241,30 +277,72 @@ int fw_cfg_add_callback(void *opaque, uint16_t key, FWCfgCallback callback,
     return 1;
 }
 
-void *fw_cfg_init(uint32_t ctl_port, uint32_t data_port,
-		target_phys_addr_t ctl_addr, target_phys_addr_t data_addr)
+int fw_cfg_add_file(FWCfgState *s,  const char *dir, const char *filename,
+                    uint8_t *data, uint32_t len)
 {
+    const char *basename;
+    int i, index;
+
+    if (!s->files) {
+        int dsize = sizeof(uint32_t) + sizeof(FWCfgFile) * FW_CFG_FILE_SLOTS;
+        s->files = qemu_mallocz(dsize);
+        fw_cfg_add_bytes(s, FW_CFG_FILE_DIR, (uint8_t*)s->files, dsize);
+    }
+
+    index = be32_to_cpu(s->files->count);
+    if (index == FW_CFG_FILE_SLOTS) {
+        fprintf(stderr, "fw_cfg: out of file slots\n");
+        return 0;
+    }
+
+    fw_cfg_add_bytes(s, FW_CFG_FILE_FIRST + index, data, len);
+
+    basename = strrchr(filename, '/');
+    if (basename) {
+        basename++;
+    } else {
+        basename = filename;
+    }
+
+    snprintf(s->files->f[index].name, sizeof(s->files->f[index].name),
+             "%s/%s", dir, basename);
+    for (i = 0; i < index; i++) {
+        if (strcmp(s->files->f[index].name, s->files->f[i].name) == 0) {
+            FW_CFG_DPRINTF("%s: skip duplicate: %s\n", __FUNCTION__,
+                           s->files->f[index].name);
+            return 1;
+        }
+    }
+
+    s->files->f[index].size   = cpu_to_be32(len);
+    s->files->f[index].select = cpu_to_be16(FW_CFG_FILE_FIRST + index);
+    FW_CFG_DPRINTF("%s: #%d: %s (%d bytes)\n", __FUNCTION__,
+                   index, s->files->f[index].name, len);
+
+    s->files->count = cpu_to_be32(index+1);
+    return 1;
+}
+
+FWCfgState *fw_cfg_init(uint32_t ctl_port, uint32_t data_port,
+                        target_phys_addr_t ctl_addr, target_phys_addr_t data_addr)
+{
+    DeviceState *dev;
+    SysBusDevice *d;
     FWCfgState *s;
-    int io_ctl_memory, io_data_memory;
 
-    s = qemu_mallocz(sizeof(FWCfgState));
+    dev = qdev_create(NULL, "fw_cfg");
+    qdev_prop_set_uint32(dev, "ctl_iobase", ctl_port);
+    qdev_prop_set_uint32(dev, "data_iobase", data_port);
+    qdev_init_nofail(dev);
+    d = sysbus_from_qdev(dev);
 
-    if (ctl_port) {
-        register_ioport_write(ctl_port, 2, 2, fw_cfg_io_writew, s);
-    }
-    if (data_port) {
-        register_ioport_read(data_port, 1, 1, fw_cfg_io_readb, s);
-        register_ioport_write(data_port, 1, 1, fw_cfg_io_writeb, s);
-    }
+    s = DO_UPCAST(FWCfgState, busdev.qdev, dev);
+
     if (ctl_addr) {
-        io_ctl_memory = cpu_register_io_memory(fw_cfg_ctl_mem_read,
-                                           fw_cfg_ctl_mem_write, s);
-        cpu_register_physical_memory(ctl_addr, FW_CFG_SIZE, io_ctl_memory);
+        sysbus_mmio_map(d, 0, ctl_addr);
     }
     if (data_addr) {
-        io_data_memory = cpu_register_io_memory(fw_cfg_data_mem_read,
-                                           fw_cfg_data_mem_write, s);
-        cpu_register_physical_memory(data_addr, FW_CFG_SIZE, io_data_memory);
+        sysbus_mmio_map(d, 1, data_addr);
     }
     fw_cfg_add_bytes(s, FW_CFG_SIGNATURE, (uint8_t *)"QEMU", 4);
     fw_cfg_add_bytes(s, FW_CFG_UUID, qemu_uuid, 16);
@@ -273,9 +351,49 @@ void *fw_cfg_init(uint32_t ctl_port, uint32_t data_port,
     fw_cfg_add_i16(s, FW_CFG_MAX_CPUS, (uint16_t)max_cpus);
     fw_cfg_add_i16(s, FW_CFG_BOOT_MENU, (uint16_t)boot_menu);
 
-    vmstate_register(-1, &vmstate_fw_cfg, s);
-    qemu_register_reset(fw_cfg_reset, s);
-    fw_cfg_reset(s);
-
     return s;
 }
+
+static int fw_cfg_init1(SysBusDevice *dev)
+{
+    FWCfgState *s = FROM_SYSBUS(FWCfgState, dev);
+    int io_ctl_memory, io_data_memory;
+
+    io_ctl_memory = cpu_register_io_memory(fw_cfg_ctl_mem_read,
+                                           fw_cfg_ctl_mem_write, s);
+    sysbus_init_mmio(dev, FW_CFG_SIZE, io_ctl_memory);
+
+    io_data_memory = cpu_register_io_memory(fw_cfg_data_mem_read,
+                                            fw_cfg_data_mem_write, s);
+    sysbus_init_mmio(dev, FW_CFG_SIZE, io_data_memory);
+
+    if (s->ctl_iobase) {
+        register_ioport_write(s->ctl_iobase, 2, 2, fw_cfg_io_writew, s);
+    }
+    if (s->data_iobase) {
+        register_ioport_read(s->data_iobase, 1, 1, fw_cfg_io_readb, s);
+        register_ioport_write(s->data_iobase, 1, 1, fw_cfg_io_writeb, s);
+    }
+    return 0;
+}
+
+static SysBusDeviceInfo fw_cfg_info = {
+    .init = fw_cfg_init1,
+    .qdev.name = "fw_cfg",
+    .qdev.size = sizeof(FWCfgState),
+    .qdev.vmsd = &vmstate_fw_cfg,
+    .qdev.reset = fw_cfg_reset,
+    .qdev.no_user = 1,
+    .qdev.props = (Property[]) {
+        DEFINE_PROP_HEX32("ctl_iobase", FWCfgState, ctl_iobase, -1),
+        DEFINE_PROP_HEX32("data_iobase", FWCfgState, data_iobase, -1),
+        DEFINE_PROP_END_OF_LIST(),
+    },
+};
+
+static void fw_cfg_register_devices(void)
+{
+    sysbus_register_withprop(&fw_cfg_info);
+}
+
+device_init(fw_cfg_register_devices)

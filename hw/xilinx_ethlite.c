@@ -51,14 +51,14 @@ struct xlx_ethlite
 {
     SysBusDevice busdev;
     qemu_irq irq;
-    VLANClientState *vc;
+    NICState *nic;
+    NICConf conf;
 
     uint32_t c_tx_pingpong;
     uint32_t c_rx_pingpong;
     unsigned int txbuf;
     unsigned int rxbuf;
 
-    uint8_t macaddr[6];
     uint32_t regs[R_MAX];
 };
 
@@ -118,14 +118,14 @@ eth_writel (void *opaque, target_phys_addr_t addr, uint32_t value)
 
             D(qemu_log("%s addr=%x val=%x\n", __func__, addr * 4, value));
             if ((value & (CTRL_P | CTRL_S)) == CTRL_S) {
-                qemu_send_packet(s->vc,
+                qemu_send_packet(&s->nic->nc,
                                  (void *) &s->regs[base],
                                  s->regs[base + R_TX_LEN0]);
                 D(qemu_log("eth_tx %d\n", s->regs[base + R_TX_LEN0]));
                 if (s->regs[base + R_TX_CTRL0] & CTRL_I)
                     eth_pulse_irq(s);
             } else if ((value & (CTRL_P | CTRL_S)) == (CTRL_P | CTRL_S)) {
-                memcpy(&s->macaddr[0], &s->regs[base], 6);
+                memcpy(&s->conf.macaddr.a[0], &s->regs[base], 6);
                 if (s->regs[base + R_TX_CTRL0] & CTRL_I)
                     eth_pulse_irq(s);
             }
@@ -160,22 +160,22 @@ static CPUWriteMemoryFunc * const eth_write[] = {
     NULL, NULL, &eth_writel,
 };
 
-static int eth_can_rx(VLANClientState *vc)
+static int eth_can_rx(VLANClientState *nc)
 {
-    struct xlx_ethlite *s = vc->opaque;
+    struct xlx_ethlite *s = DO_UPCAST(NICState, nc, nc)->opaque;
     int r;
     r = !(s->regs[R_RX_CTRL0] & CTRL_S);
     return r;
 }
 
-static ssize_t eth_rx(VLANClientState *vc, const uint8_t *buf, size_t size)
+static ssize_t eth_rx(VLANClientState *nc, const uint8_t *buf, size_t size)
 {
-    struct xlx_ethlite *s = vc->opaque;
+    struct xlx_ethlite *s = DO_UPCAST(NICState, nc, nc)->opaque;
     unsigned int rxbase = s->rxbuf * (0x800 / 4);
     int i;
 
     /* DA filter.  */
-    if (!(buf[0] & 0x80) && memcmp(&s->macaddr[0], buf, 6))
+    if (!(buf[0] & 0x80) && memcmp(&s->conf.macaddr.a[0], buf, 6))
         return size;
 
     if (s->regs[rxbase + R_RX_CTRL0] & CTRL_S) {
@@ -201,11 +201,20 @@ static ssize_t eth_rx(VLANClientState *vc, const uint8_t *buf, size_t size)
     return size;
 }
 
-static void eth_cleanup(VLANClientState *vc)
+static void eth_cleanup(VLANClientState *nc)
 {
-    struct xlx_ethlite *s = vc->opaque;
-    qemu_free(s);
+    struct xlx_ethlite *s = DO_UPCAST(NICState, nc, nc)->opaque;
+
+    s->nic = NULL;
 }
+
+static NetClientInfo net_xilinx_ethlite_info = {
+    .type = NET_CLIENT_TYPE_NIC,
+    .size = sizeof(NICState),
+    .can_receive = eth_can_rx,
+    .receive = eth_rx,
+    .cleanup = eth_cleanup,
+};
 
 static int xilinx_ethlite_init(SysBusDevice *dev)
 {
@@ -218,9 +227,10 @@ static int xilinx_ethlite_init(SysBusDevice *dev)
     regs = cpu_register_io_memory(eth_read, eth_write, s);
     sysbus_init_mmio(dev, R_MAX * 4, regs);
 
-    qdev_get_macaddr(&dev->qdev, s->macaddr);
-    s->vc = qdev_get_vlan_client(&dev->qdev,
-                                 eth_can_rx, eth_rx, NULL, eth_cleanup, s);
+    qemu_macaddr_default_if_unset(&s->conf.macaddr);
+    s->nic = qemu_new_nic(&net_xilinx_ethlite_info, &s->conf,
+                          dev->qdev.info->name, dev->qdev.id, s);
+    qemu_format_nic_info_str(&s->nic->nc, s->conf.macaddr.a);
     return 0;
 }
 
@@ -231,6 +241,7 @@ static SysBusDeviceInfo xilinx_ethlite_info = {
     .qdev.props = (Property[]) {
         DEFINE_PROP_UINT32("txpingpong", struct xlx_ethlite, c_tx_pingpong, 1),
         DEFINE_PROP_UINT32("rxpingpong", struct xlx_ethlite, c_rx_pingpong, 1),
+        DEFINE_NIC_PROPERTIES(struct xlx_ethlite, conf),
         DEFINE_PROP_END_OF_LIST(),
     }
 };

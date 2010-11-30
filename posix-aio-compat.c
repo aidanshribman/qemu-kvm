@@ -36,7 +36,7 @@ struct qemu_paiocb {
     int aio_fildes;
     union {
         struct iovec *aio_iov;
-	void *aio_ioctl_buf;
+        void *aio_ioctl_buf;
     };
     int aio_niov;
     size_t aio_nbytes;
@@ -49,6 +49,8 @@ struct qemu_paiocb {
     ssize_t ret;
     int active;
     struct qemu_paiocb *next;
+
+    int async_context_id;
 };
 
 typedef struct PosixAioState {
@@ -116,26 +118,26 @@ static void thread_create(pthread_t *thread, pthread_attr_t *attr,
     if (ret) die2(ret, "pthread_create");
 }
 
-static size_t handle_aiocb_ioctl(struct qemu_paiocb *aiocb)
+static ssize_t handle_aiocb_ioctl(struct qemu_paiocb *aiocb)
 {
-	int ret;
+    int ret;
 
-	ret = ioctl(aiocb->aio_fildes, aiocb->aio_ioctl_cmd, aiocb->aio_ioctl_buf);
-	if (ret == -1)
-		return -errno;
+    ret = ioctl(aiocb->aio_fildes, aiocb->aio_ioctl_cmd, aiocb->aio_ioctl_buf);
+    if (ret == -1)
+        return -errno;
 
-	/*
-	 * This looks weird, but the aio code only consideres a request
-	 * successfull if it has written the number full number of bytes.
-	 *
-	 * Now we overload aio_nbytes as aio_ioctl_cmd for the ioctl command,
-	 * so in fact we return the ioctl command here to make posix_aio_read()
-	 * happy..
-	 */
-	return aiocb->aio_nbytes;
+    /*
+     * This looks weird, but the aio code only consideres a request
+     * successfull if it has written the number full number of bytes.
+     *
+     * Now we overload aio_nbytes as aio_ioctl_cmd for the ioctl command,
+     * so in fact we return the ioctl command here to make posix_aio_read()
+     * happy..
+     */
+    return aiocb->aio_nbytes;
 }
 
-static size_t handle_aiocb_flush(struct qemu_paiocb *aiocb)
+static ssize_t handle_aiocb_flush(struct qemu_paiocb *aiocb)
 {
     int ret;
 
@@ -175,7 +177,7 @@ qemu_pwritev(int fd, const struct iovec *iov, int nr_iov, off_t offset)
 
 #endif
 
-static size_t handle_aiocb_rw_vector(struct qemu_paiocb *aiocb)
+static ssize_t handle_aiocb_rw_vector(struct qemu_paiocb *aiocb)
 {
     size_t offset = 0;
     ssize_t len;
@@ -198,10 +200,10 @@ static size_t handle_aiocb_rw_vector(struct qemu_paiocb *aiocb)
     return len;
 }
 
-static size_t handle_aiocb_rw_linear(struct qemu_paiocb *aiocb, char *buf)
+static ssize_t handle_aiocb_rw_linear(struct qemu_paiocb *aiocb, char *buf)
 {
-    size_t offset = 0;
-    size_t len;
+    ssize_t offset = 0;
+    ssize_t len;
 
     while (offset < aiocb->aio_nbytes) {
          if (aiocb->aio_type & QEMU_AIO_WRITE)
@@ -229,9 +231,9 @@ static size_t handle_aiocb_rw_linear(struct qemu_paiocb *aiocb, char *buf)
     return offset;
 }
 
-static size_t handle_aiocb_rw(struct qemu_paiocb *aiocb)
+static ssize_t handle_aiocb_rw(struct qemu_paiocb *aiocb)
 {
-    size_t nbytes;
+    ssize_t nbytes;
     char *buf;
 
     if (!(aiocb->aio_type & QEMU_AIO_MISALIGNED)) {
@@ -248,10 +250,10 @@ static size_t handle_aiocb_rw(struct qemu_paiocb *aiocb)
          * Try preadv/pwritev first and fall back to linearizing the
          * buffer if it's not supported.
          */
-	if (preadv_present) {
+        if (preadv_present) {
             nbytes = handle_aiocb_rw_vector(aiocb);
             if (nbytes == aiocb->aio_nbytes)
-	        return nbytes;
+                return nbytes;
             if (nbytes < 0 && nbytes != -ENOSYS)
                 return nbytes;
             preadv_present = 0;
@@ -307,7 +309,7 @@ static void *aio_thread(void *unused)
 
     while (1) {
         struct qemu_paiocb *aiocb;
-        size_t ret = 0;
+        ssize_t ret = 0;
         qemu_timeval tv;
         struct timespec ts;
 
@@ -334,19 +336,19 @@ static void *aio_thread(void *unused)
         switch (aiocb->aio_type & QEMU_AIO_TYPE_MASK) {
         case QEMU_AIO_READ:
         case QEMU_AIO_WRITE:
-		ret = handle_aiocb_rw(aiocb);
-		break;
+            ret = handle_aiocb_rw(aiocb);
+            break;
         case QEMU_AIO_FLUSH:
-                ret = handle_aiocb_flush(aiocb);
-                break;
+            ret = handle_aiocb_flush(aiocb);
+            break;
         case QEMU_AIO_IOCTL:
-		ret = handle_aiocb_ioctl(aiocb);
-		break;
-	default:
-		fprintf(stderr, "invalid aio request (0x%x)\n", aiocb->aio_type);
-		ret = -EINVAL;
-		break;
-	}
+            ret = handle_aiocb_ioctl(aiocb);
+            break;
+        default:
+            fprintf(stderr, "invalid aio request (0x%x)\n", aiocb->aio_type);
+            ret = -EINVAL;
+            break;
+        }
 
         mutex_lock(&lock);
         aiocb->ret = ret;
@@ -414,11 +416,63 @@ static int qemu_paio_error(struct qemu_paiocb *aiocb)
     return ret;
 }
 
-static void posix_aio_read(void *opaque)
+static int posix_aio_process_queue(void *opaque)
 {
     PosixAioState *s = opaque;
     struct qemu_paiocb *acb, **pacb;
     int ret;
+    int result = 0;
+    int async_context_id = get_async_context_id();
+
+    for(;;) {
+        pacb = &s->first_aio;
+        for(;;) {
+            acb = *pacb;
+            if (!acb)
+                return result;
+
+            /* we're only interested in requests in the right context */
+            if (acb->async_context_id != async_context_id) {
+                pacb = &acb->next;
+                continue;
+            }
+
+            ret = qemu_paio_error(acb);
+            if (ret == ECANCELED) {
+                /* remove the request */
+                *pacb = acb->next;
+                qemu_aio_release(acb);
+                result = 1;
+            } else if (ret != EINPROGRESS) {
+                /* end of aio */
+                if (ret == 0) {
+                    ret = qemu_paio_return(acb);
+                    if (ret == acb->aio_nbytes)
+                        ret = 0;
+                    else
+                        ret = -EINVAL;
+                } else {
+                    ret = -ret;
+                }
+                /* remove the request */
+                *pacb = acb->next;
+                /* call the callback */
+                acb->common.cb(acb->common.opaque, ret);
+                qemu_aio_release(acb);
+                result = 1;
+                break;
+            } else {
+                pacb = &acb->next;
+            }
+        }
+    }
+
+    return result;
+}
+
+static void posix_aio_read(void *opaque)
+{
+    PosixAioState *s = opaque;
     union {
         struct qemu_signalfd_siginfo siginfo;
         char buf[128];
@@ -444,40 +498,7 @@ static void posix_aio_read(void *opaque)
         offset += len;
     }
 
-    for(;;) {
-        pacb = &s->first_aio;
-        for(;;) {
-            acb = *pacb;
-            if (!acb)
-                goto the_end;
-            ret = qemu_paio_error(acb);
-            if (ret == ECANCELED) {
-                /* remove the request */
-                *pacb = acb->next;
-                qemu_aio_release(acb);
-            } else if (ret != EINPROGRESS) {
-                /* end of aio */
-                if (ret == 0) {
-                    ret = qemu_paio_return(acb);
-                    if (ret == acb->aio_nbytes)
-                        ret = 0;
-                    else
-                        ret = -EINVAL;
-                } else {
-                    ret = -ret;
-                }
-                /* remove the request */
-                *pacb = acb->next;
-                /* call the callback */
-                acb->common.cb(acb->common.opaque, ret);
-                qemu_aio_release(acb);
-                break;
-            } else {
-                pacb = &acb->next;
-            }
-        }
-    }
- the_end: ;
+    posix_aio_process_queue(s);
 }
 
 static int posix_aio_flush(void *opaque)
@@ -536,7 +557,7 @@ static AIOPool raw_aio_pool = {
     .cancel             = paio_cancel,
 };
 
-BlockDriverAIOCB *paio_submit(BlockDriverState *bs, void *aio_ctx, int fd,
+BlockDriverAIOCB *paio_submit(BlockDriverState *bs, int fd,
         int64_t sector_num, QEMUIOVector *qiov, int nb_sectors,
         BlockDriverCompletionFunc *cb, void *opaque, int type)
 {
@@ -548,6 +569,8 @@ BlockDriverAIOCB *paio_submit(BlockDriverState *bs, void *aio_ctx, int fd,
     acb->aio_type = type;
     acb->aio_fildes = fd;
     acb->ev_signo = SIGUSR2;
+    acb->async_context_id = get_async_context_id();
+
     if (qiov) {
         acb->aio_iov = qiov->iov;
         acb->aio_niov = qiov->niov;
@@ -574,6 +597,7 @@ BlockDriverAIOCB *paio_ioctl(BlockDriverState *bs, int fd,
     acb->aio_type = QEMU_AIO_IOCTL;
     acb->aio_fildes = fd;
     acb->ev_signo = SIGUSR2;
+    acb->async_context_id = get_async_context_id();
     acb->aio_offset = 0;
     acb->aio_ioctl_buf = buf;
     acb->aio_ioctl_cmd = req;
@@ -585,14 +609,14 @@ BlockDriverAIOCB *paio_ioctl(BlockDriverState *bs, int fd,
     return &acb->common;
 }
 
-void *paio_init(void)
+int paio_init(void)
 {
     sigset_t mask;
     PosixAioState *s;
     int ret;
 
     if (posix_aio_state)
-        return posix_aio_state;
+        return 0;
 
     s = qemu_malloc(sizeof(PosixAioState));
 
@@ -605,12 +629,13 @@ void *paio_init(void)
     s->fd = qemu_signalfd(&mask);
     if (s->fd == -1) {
         fprintf(stderr, "failed to create signalfd\n");
-        return NULL;
+        return -1;
     }
 
     fcntl(s->fd, F_SETFL, O_NONBLOCK);
 
-    qemu_aio_set_fd_handler(s->fd, posix_aio_read, NULL, posix_aio_flush, s);
+    qemu_aio_set_fd_handler(s->fd, posix_aio_read, NULL, posix_aio_flush,
+        posix_aio_process_queue, s);
 
     ret = pthread_attr_init(&attr);
     if (ret)
@@ -623,6 +648,5 @@ void *paio_init(void)
     QTAILQ_INIT(&request_list);
 
     posix_aio_state = s;
-
-    return posix_aio_state;
+    return 0;
 }

@@ -35,14 +35,6 @@ register struct CPUPPCState *env asm(AREG0);
 #include "softmmu_exec.h"
 #endif /* !defined(CONFIG_USER_ONLY) */
 
-static inline void env_to_regs(void)
-{
-}
-
-static inline void regs_to_env(void)
-{
-}
-
 static inline int cpu_has_work(CPUState *env)
 {
     return (msr_ee && (env->interrupt_request & CPU_INTERRUPT_HARD));
@@ -58,6 +50,11 @@ static inline int cpu_halted(CPUState *env)
         return 0;
     }
     return EXCP_HALTED;
+}
+
+static inline void cpu_pc_from_tb(CPUState *env, TranslationBlock *tb)
+{
+    env->nip = tb->pc;
 }
 
 #endif /* !defined (__PPC_H__) */

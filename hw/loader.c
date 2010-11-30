@@ -48,8 +48,11 @@
 #include "sysemu.h"
 #include "uboot_image.h"
 #include "loader.h"
+#include "fw_cfg.h"
 
 #include <zlib.h>
+
+static int roms_loaded;
 
 /* return the size or -1 if error */
 int get_image_size(const char *filename)
@@ -273,9 +276,9 @@ static void *load_at(int fd, int offset, int size)
 #include "elf_ops.h"
 
 /* return < 0 if error, otherwise the number of bytes loaded in memory */
-int load_elf(const char *filename, int64_t address_offset,
-             uint64_t *pentry, uint64_t *lowaddr, uint64_t *highaddr,
-             int big_endian, int elf_machine, int clear_lsb)
+int load_elf(const char *filename, uint64_t (*translate_fn)(void *, uint64_t),
+             void *translate_opaque, uint64_t *pentry, uint64_t *lowaddr,
+             uint64_t *highaddr, int big_endian, int elf_machine, int clear_lsb)
 {
     int fd, data_order, target_data_order, must_swab, ret;
     uint8_t e_ident[EI_NIDENT];
@@ -309,11 +312,11 @@ int load_elf(const char *filename, int64_t address_offset,
 
     lseek(fd, 0, SEEK_SET);
     if (e_ident[EI_CLASS] == ELFCLASS64) {
-        ret = load_elf64(filename, fd, address_offset, must_swab, pentry,
-                         lowaddr, highaddr, elf_machine, clear_lsb);
+        ret = load_elf64(filename, fd, translate_fn, translate_opaque, must_swab,
+                         pentry, lowaddr, highaddr, elf_machine, clear_lsb);
     } else {
-        ret = load_elf32(filename, fd, address_offset, must_swab, pentry,
-                         lowaddr, highaddr, elf_machine, clear_lsb);
+        ret = load_elf32(filename, fd, translate_fn, translate_opaque, must_swab,
+                         pentry, lowaddr, highaddr, elf_machine, clear_lsb);
     }
 
     close(fd);
@@ -524,24 +527,28 @@ struct Rom {
     char *path;
     size_t romsize;
     uint8_t *data;
-    int align;
     int isrom;
+    char *fw_dir;
+    char *fw_file;
 
-    target_phys_addr_t min;
-    target_phys_addr_t max;
     target_phys_addr_t addr;
     QTAILQ_ENTRY(Rom) next;
 };
 
+static FWCfgState *fw_cfg;
 static QTAILQ_HEAD(, Rom) roms = QTAILQ_HEAD_INITIALIZER(roms);
 
 static void rom_insert(Rom *rom)
 {
     Rom *item;
 
+    if (roms_loaded) {
+        hw_error ("ROM images must be loaded at startup\n");
+    }
+
     /* list is ordered by load address */
     QTAILQ_FOREACH(item, &roms, next) {
-        if (rom->min >= item->min)
+        if (rom->addr >= item->addr)
             continue;
         QTAILQ_INSERT_BEFORE(item, rom, next);
         return;
@@ -549,8 +556,8 @@ static void rom_insert(Rom *rom)
     QTAILQ_INSERT_TAIL(&roms, rom, next);
 }
 
-int rom_add_file(const char *file,
-                 target_phys_addr_t min, target_phys_addr_t max, int align)
+int rom_add_file(const char *file, const char *fw_dir,
+                 target_phys_addr_t addr)
 {
     Rom *rom;
     int rc, fd = -1;
@@ -559,7 +566,7 @@ int rom_add_file(const char *file,
     rom->name = qemu_strdup(file);
     rom->path = qemu_find_file(QEMU_FILE_TYPE_BIOS, rom->name);
     if (rom->path == NULL) {
-        rom->path = strdup(file);
+        rom->path = qemu_strdup(file);
     }
 
     fd = open(rom->path, O_RDONLY | O_BINARY);
@@ -569,9 +576,11 @@ int rom_add_file(const char *file,
         goto err;
     }
 
-    rom->align   = align;
-    rom->min     = min;
-    rom->max     = max;
+    if (fw_dir) {
+        rom->fw_dir  = qemu_strdup(fw_dir);
+        rom->fw_file = qemu_strdup(file);
+    }
+    rom->addr    = addr;
     rom->romsize = lseek(fd, 0, SEEK_END);
     rom->data    = qemu_mallocz(rom->romsize);
     lseek(fd, 0, SEEK_SET);
@@ -583,6 +592,8 @@ int rom_add_file(const char *file,
     }
     close(fd);
     rom_insert(rom);
+    if (rom->fw_file && fw_cfg)
+        fw_cfg_add_file(fw_cfg, rom->fw_dir, rom->fw_file, rom->data, rom->romsize);
     return 0;
 
 err:
@@ -596,15 +607,13 @@ err:
 }
 
 int rom_add_blob(const char *name, const void *blob, size_t len,
-                 target_phys_addr_t min, target_phys_addr_t max, int align)
+                 target_phys_addr_t addr)
 {
     Rom *rom;
 
     rom = qemu_mallocz(sizeof(*rom));
     rom->name    = qemu_strdup(name);
-    rom->align   = align;
-    rom->min     = min;
-    rom->max     = max;
+    rom->addr    = addr;
     rom->romsize = len;
     rom->data    = qemu_mallocz(rom->romsize);
     memcpy(rom->data, blob, len);
@@ -612,13 +621,27 @@ int rom_add_blob(const char *name, const void *blob, size_t len,
     return 0;
 }
 
+int rom_add_vga(const char *file)
+{
+    return rom_add_file(file, "vgaroms", 0);
+}
+
+int rom_add_option(const char *file)
+{
+    return rom_add_file(file, "genroms", 0);
+}
+
 static void rom_reset(void *unused)
 {
     Rom *rom;
 
     QTAILQ_FOREACH(rom, &roms, next) {
-        if (rom->data == NULL)
+        if (rom->fw_file) {
             continue;
+        }
+        if (rom->data == NULL) {
+            continue;
+        }
         cpu_physical_memory_write_rom(rom->addr, rom->data, rom->romsize);
         if (rom->isrom) {
             /* rom needs to be written only once */
@@ -635,40 +658,30 @@ int rom_load_all(void)
     Rom *rom;
 
     QTAILQ_FOREACH(rom, &roms, next) {
-        if (addr < rom->min)
-            addr = rom->min;
-        if (rom->max) {
-            /* load address range */
-            if (rom->align) {
-                addr += (rom->align-1);
-                addr &= ~(rom->align-1);
-            }
-            if (addr + rom->romsize > rom->max) {
-                fprintf(stderr, "rom: out of memory (rom %s, "
-                        "addr 0x" TARGET_FMT_plx
-                        ", size 0x%zx, max 0x" TARGET_FMT_plx ")\n",
-                        rom->name, addr, rom->romsize, rom->max);
-                return -1;
-            }
-        } else {
-            /* fixed address requested */
-            if (addr != rom->min) {
-                fprintf(stderr, "rom: requested regions overlap "
-                        "(rom %s. free=0x" TARGET_FMT_plx
-                        ", addr=0x" TARGET_FMT_plx ")\n",
-                        rom->name, addr, rom->min);
-                return -1;
-            }
+        if (rom->fw_file) {
+            continue;
         }
-        rom->addr = addr;
+        if (addr > rom->addr) {
+            fprintf(stderr, "rom: requested regions overlap "
+                    "(rom %s. free=0x" TARGET_FMT_plx
+                    ", addr=0x" TARGET_FMT_plx ")\n",
+                    rom->name, addr, rom->addr);
+            return -1;
+        }
+        addr  = rom->addr;
         addr += rom->romsize;
         memtype = cpu_get_physical_page_desc(rom->addr) & (3 << IO_MEM_SHIFT);
         if (memtype == IO_MEM_ROM)
             rom->isrom = 1;
     }
     qemu_register_reset(rom_reset, NULL);
-    rom_reset(NULL);
+    roms_loaded = 1;
     return 0;
+}
+
+void rom_set_fw(void *f)
+{
+    fw_cfg = f;
 }
 
 static Rom *find_rom(target_phys_addr_t addr)
@@ -676,15 +689,63 @@ static Rom *find_rom(target_phys_addr_t addr)
     Rom *rom;
 
     QTAILQ_FOREACH(rom, &roms, next) {
-        if (rom->max)
+        if (rom->fw_file) {
             continue;
-        if (rom->min > addr)
+        }
+        if (rom->addr > addr) {
             continue;
-        if (rom->min + rom->romsize < addr)
+        }
+        if (rom->addr + rom->romsize < addr) {
             continue;
+        }
         return rom;
     }
     return NULL;
+}
+
+/*
+ * Copies memory from registered ROMs to dest. Any memory that is contained in
+ * a ROM between addr and addr + size is copied. Note that this can involve
+ * multiple ROMs, which need not start at addr and need not end at addr + size.
+ */
+int rom_copy(uint8_t *dest, target_phys_addr_t addr, size_t size)
+{
+    target_phys_addr_t end = addr + size;
+    uint8_t *s, *d = dest;
+    size_t l = 0;
+    Rom *rom;
+
+    QTAILQ_FOREACH(rom, &roms, next) {
+        if (rom->fw_file) {
+            continue;
+        }
+        if (rom->addr + rom->romsize < addr) {
+            continue;
+        }
+        if (rom->addr > end) {
+            break;
+        }
+        if (!rom->data) {
+            continue;
+        }
+
+        d = dest + (rom->addr - addr);
+        s = rom->data;
+        l = rom->romsize;
+
+        if (rom->addr < addr) {
+            d = dest;
+            s += (addr - rom->addr);
+            l -= (addr - rom->addr);
+        }
+        if ((d + l) > (dest + size)) {
+            l = dest - d;
+        }
+
+        memcpy(d, s, l);
+    }
+
+    return (d + l) - dest;
 }
 
 void *rom_ptr(target_phys_addr_t addr)
@@ -694,7 +755,7 @@ void *rom_ptr(target_phys_addr_t addr)
     rom = find_rom(addr);
     if (!rom || !rom->data)
         return NULL;
-    return rom->data + (addr - rom->min);
+    return rom->data + (addr - rom->addr);
 }
 
 void do_info_roms(Monitor *mon)
@@ -702,10 +763,19 @@ void do_info_roms(Monitor *mon)
     Rom *rom;
 
     QTAILQ_FOREACH(rom, &roms, next) {
-        monitor_printf(mon, "addr=" TARGET_FMT_plx
-                       " size=0x%06zx mem=%s name=\"%s\" \n",
-                       rom->addr, rom->romsize,
-                       rom->isrom ? "rom" : "ram",
-                       rom->name);
+        if (!rom->fw_file) {
+            monitor_printf(mon, "addr=" TARGET_FMT_plx
+                           " size=0x%06zx mem=%s name=\"%s\" \n",
+                           rom->addr, rom->romsize,
+                           rom->isrom ? "rom" : "ram",
+                           rom->name);
+        } else {
+            monitor_printf(mon, "fw=%s/%s"
+                           " size=0x%06zx name=\"%s\" \n",
+                           rom->fw_dir,
+                           rom->fw_file,
+                           rom->romsize,
+                           rom->name);
+        }
     }
 }

@@ -43,10 +43,11 @@ static int usb_qdev_init(DeviceState *qdev, DeviceInfo *base)
     USBDeviceInfo *info = DO_UPCAST(USBDeviceInfo, qdev, base);
     int rc;
 
-    pstrcpy(dev->devname, sizeof(dev->devname), qdev->info->name);
+    pstrcpy(dev->product_desc, sizeof(dev->product_desc), info->product_desc);
     dev->info = info;
+    dev->auto_attach = 1;
     rc = dev->info->init(dev);
-    if (rc == 0)
+    if (rc == 0 && dev->auto_attach)
         usb_device_attach(dev);
     return rc;
 }
@@ -101,6 +102,9 @@ USBDevice *usb_create(USBBus *bus, const char *name)
 USBDevice *usb_create_simple(USBBus *bus, const char *name)
 {
     USBDevice *dev = usb_create(bus, name);
+    if (!dev) {
+        hw_error("Failed to create USB device '%s'\n", name);
+    }
     qdev_init_nofail(&dev->qdev);
     return dev;
 }
@@ -130,7 +134,7 @@ static void do_attach(USBDevice *dev)
 
     if (dev->attached) {
         fprintf(stderr, "Warning: tried to attach usb device %s twice\n",
-                dev->devname);
+                dev->product_desc);
         return;
     }
     dev->attached++;
@@ -148,11 +152,10 @@ static void do_attach(USBDevice *dev)
 int usb_device_attach(USBDevice *dev)
 {
     USBBus *bus = usb_bus_from_device(dev);
-    USBDevice *hub;
 
     if (bus->nfree == 1) {
         /* Create a new hub and chain it on.  */
-        hub = usb_create_simple(bus, "QEMU USB Hub");
+        usb_create_simple(bus, "usb-hub");
     }
     do_attach(dev);
     return 0;
@@ -165,7 +168,7 @@ int usb_device_detach(USBDevice *dev)
 
     if (!dev->attached) {
         fprintf(stderr, "Warning: tried to detach unattached usb device %s\n",
-                dev->devname);
+                dev->product_desc);
         return -1;
     }
     dev->attached--;
@@ -225,9 +228,10 @@ static void usb_bus_dev_print(Monitor *mon, DeviceState *qdev, int indent)
     USBDevice *dev = DO_UPCAST(USBDevice, qdev, qdev);
     USBBus *bus = usb_bus_from_device(dev);
 
-    monitor_printf(mon, "%*saddr %d.%d, speed %s, name %s\n", indent, "",
-                   bus->busnr, dev->addr,
-                   usb_speed(dev->speed), dev->devname);
+    monitor_printf(mon, "%*saddr %d.%d, speed %s, name %s%s\n",
+                   indent, "", bus->busnr, dev->addr,
+                   usb_speed(dev->speed), dev->product_desc,
+                   dev->attached ? ", attached" : "");
 }
 
 void usb_info(Monitor *mon)
@@ -247,8 +251,58 @@ void usb_info(Monitor *mon)
             if (!dev)
                 continue;
             monitor_printf(mon, "  Device %d.%d, Speed %s Mb/s, Product %s\n",
-                           bus->busnr, dev->addr, usb_speed(dev->speed), dev->devname);
+                           bus->busnr, dev->addr, usb_speed(dev->speed),
+                           dev->product_desc);
         }
     }
 }
 
+/* handle legacy -usbdevice cmd line option */
+USBDevice *usbdevice_create(const char *cmdline)
+{
+    USBBus *bus = usb_bus_find(-1 /* any */);
+    DeviceInfo *info;
+    USBDeviceInfo *usb;
+    char driver[32];
+    const char *params;
+    int len;
+
+    params = strchr(cmdline,':');
+    if (params) {
+        params++;
+        len = params - cmdline;
+        if (len > sizeof(driver))
+            len = sizeof(driver);
+        pstrcpy(driver, len, cmdline);
+    } else {
+        params = "";
+        pstrcpy(driver, sizeof(driver), cmdline);
+    }
+
+    for (info = device_info_list; info != NULL; info = info->next) {
+        if (info->bus_info != &usb_bus_info)
+            continue;
+        usb = DO_UPCAST(USBDeviceInfo, qdev, info);
+        if (usb->usbdevice_name == NULL)
+            continue;
+        if (strcmp(usb->usbdevice_name, driver) != 0)
+            continue;
+        break;
+    }
+    if (info == NULL) {
+#if 0
+        /* no error because some drivers are not converted (yet) */
+        error_report("usbdevice %s not found", driver);
+#endif
+        return NULL;
+    }
+
+    if (!usb->usbdevice_init) {
+        if (*params) {
+            error_report("usbdevice %s accepts no params", driver);
+            return NULL;
+        }
+        return usb_create_simple(bus, usb->qdev.name);
+    }
+    return usb->usbdevice_init(params);
+}

@@ -402,7 +402,7 @@ SW *glue (AUD_open_, TYPE) (
     SW *sw,
     const char *name,
     void *callback_opaque ,
-    audio_callback_fn_t callback_fn,
+    audio_callback_fn callback_fn,
     struct audsettings *as
     )
 {
@@ -445,9 +445,9 @@ SW *glue (AUD_open_, TYPE) (
                SW_NAME (sw), sw->info.freq, sw->info.bits, sw->info.nchannels);
         dolog ("New %s freq %d, bits %d, channels %d\n",
                name,
-               freq,
-               (fmt == AUD_FMT_S16 || fmt == AUD_FMT_U16) ? 16 : 8,
-               nchannels);
+               as->freq,
+               (as->fmt == AUD_FMT_S16 || as->fmt == AUD_FMT_U16) ? 16 : 8,
+               as->nchannels);
 #endif
 
         if (live) {
@@ -485,32 +485,30 @@ SW *glue (AUD_open_, TYPE) (
         }
     }
 
-    if (sw) {
-        sw->card = card;
-        sw->vol = nominal_volume;
-        sw->callback.fn = callback_fn;
-        sw->callback.opaque = callback_opaque;
+    sw->card = card;
+    sw->vol = nominal_volume;
+    sw->callback.fn = callback_fn;
+    sw->callback.opaque = callback_opaque;
 
 #ifdef DAC
-        if (live) {
-            int mixed =
-                (live << old_sw->info.shift)
-                * old_sw->info.bytes_per_second
-                / sw->info.bytes_per_second;
+    if (live) {
+        int mixed =
+            (live << old_sw->info.shift)
+            * old_sw->info.bytes_per_second
+            / sw->info.bytes_per_second;
 
 #ifdef DEBUG_PLIVE
-            dolog ("Silence will be mixed %d\n", mixed);
+        dolog ("Silence will be mixed %d\n", mixed);
 #endif
-            sw->total_hw_samples_mixed += mixed;
-        }
+        sw->total_hw_samples_mixed += mixed;
+    }
 #endif
 
 #ifdef DEBUG_AUDIO
-        dolog ("%s\n", name);
-        audio_pcm_print_info ("hw", &sw->hw->info);
-        audio_pcm_print_info ("sw", &sw->info);
+    dolog ("%s\n", name);
+    audio_pcm_print_info ("hw", &sw->hw->info);
+    audio_pcm_print_info ("sw", &sw->info);
 #endif
-    }
 
     return sw;
 
@@ -543,7 +541,7 @@ uint64_t glue (AUD_get_elapsed_usec_, TYPE) (SW *sw, QEMUAudioTimeStamp *ts)
 
     cur_ts = sw->hw->ts_helper;
     old_ts = ts->old_ts;
-    /* dolog ("cur %lld old %lld\n", cur_ts, old_ts); */
+    /* dolog ("cur %" PRId64 " old %" PRId64 "\n", cur_ts, old_ts); */
 
     if (cur_ts >= old_ts) {
         delta = cur_ts - old_ts;

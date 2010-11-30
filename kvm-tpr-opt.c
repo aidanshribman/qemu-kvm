@@ -14,18 +14,18 @@
 #include "hw/hw.h"
 #include "hw/isa.h"
 #include "sysemu.h"
-#include "qemu-kvm.h"
+#include "kvm.h"
 #include "cpu.h"
 
 #include <stdio.h>
 
-static uint64_t map_addr(struct kvm_sregs *sregs, target_ulong virt, unsigned *perms)
+static uint64_t map_addr(CPUState *env, target_ulong virt, unsigned *perms)
 {
     uint64_t mask = ((1ull << 48) - 1) & ~4095ull;
     uint64_t p, pp = 7;
 
-    p = sregs->cr3;
-    if (sregs->cr4 & 0x20) {
+    p = env->cr[3];
+    if (env->cr[4] & 0x20) {
 	p &= ~31ull;
 	p = ldq_phys(p + 8 * (virt >> 30));
 	if (!(p & 1))
@@ -68,26 +68,12 @@ static uint64_t map_addr(struct kvm_sregs *sregs, target_ulong virt, unsigned *p
 
 static uint8_t read_byte_virt(CPUState *env, target_ulong virt)
 {
-    struct kvm_sregs sregs;
-
-    kvm_get_sregs(env->kvm_cpu_state.vcpu_ctx, &sregs);
-    return ldub_phys(map_addr(&sregs, virt, NULL));
+    return ldub_phys(map_addr(env, virt, NULL));
 }
 
 static void write_byte_virt(CPUState *env, target_ulong virt, uint8_t b)
 {
-    struct kvm_sregs sregs;
-
-    kvm_get_sregs(env->kvm_cpu_state.vcpu_ctx, &sregs);
-    stb_phys(map_addr(&sregs, virt, NULL), b);
-}
-
-static __u64 kvm_rsp_read(CPUState *env)
-{
-    struct kvm_regs regs;
-
-    kvm_get_regs(env->kvm_cpu_state.vcpu_ctx, &regs);
-    return regs.rsp;
+    stb_phys(map_addr(env, virt, NULL), b);
 }
 
 struct vapic_bios {
@@ -114,6 +100,7 @@ static uint32_t bios_addr;
 static uint32_t vapic_phys;
 static uint32_t bios_enabled;
 static uint32_t vbios_desc_phys;
+static uint32_t vapic_bios_addr;
 
 static void update_vbios_real_tpr(void)
 {
@@ -142,7 +129,7 @@ static int instruction_is_ok(CPUState *env, uint64_t rip, int is_write)
 
     if ((rip & 0xf0000000) != 0x80000000 && (rip & 0xf0000000) != 0xe0000000)
 	return 0;
-    if (kvm_rsp_read(env) == 0)
+    if (env->regs[R_ESP] == 0)
         return 0;
     b1 = read_byte_virt(env, rip);
     b2 = read_byte_virt(env, rip + 1);
@@ -184,19 +171,16 @@ static int bios_is_mapped(CPUState *env, uint64_t rip)
 {
     uint32_t probe;
     uint64_t phys;
-    struct kvm_sregs sregs;
     unsigned perms;
     uint32_t i;
-    uint32_t offset, fixup;
+    uint32_t offset, fixup, start = vapic_bios_addr ? : 0xe0000;
 
     if (bios_enabled)
 	return 1;
 
-    kvm_get_sregs(env->kvm_cpu_state.vcpu_ctx, &sregs);
-
-    probe = (rip & 0xf0000000) + 0xe0000;
-    phys = map_addr(&sregs, probe, &perms);
-    if (phys != 0xe0000)
+    probe = (rip & 0xf0000000) + start;
+    phys = map_addr(env, probe, &perms);
+    if (phys != start)
 	return 0;
     bios_addr = probe;
     for (i = 0; i < 64; ++i) {
@@ -224,7 +208,7 @@ static int get_pcr_cpu(CPUState *env)
 {
     uint8_t b;
 
-    kvm_save_registers(env);
+    cpu_synchronize_state(env);
 
     if (cpu_memory_rw_debug(env, env->segs[R_FS].base + 0x51, &b, 1, 0) < 0)
 	    return -1;
@@ -232,7 +216,7 @@ static int get_pcr_cpu(CPUState *env)
     return (int)b;
 }
 
-static int enable_vapic(CPUState *env)
+int kvm_tpr_enable_vapic(CPUState *env)
 {
     static uint8_t one = 1;
     int pcr_cpu = get_pcr_cpu(env);
@@ -240,10 +224,10 @@ static int enable_vapic(CPUState *env)
     if (pcr_cpu < 0)
 	    return 0;
 
-    kvm_enable_vapic(env->kvm_cpu_state.vcpu_ctx, vapic_phys + (pcr_cpu << 7));
+    kvm_enable_vapic(env, vapic_phys + (pcr_cpu << 7));
     cpu_physical_memory_rw(vapic_phys + (pcr_cpu << 7) + 4, &one, 1, 1);
+    env->kvm_vcpu_update_vapic = 0;
     bios_enabled = 1;
-
     return 1;
 }
 
@@ -302,20 +286,14 @@ static void patch_instruction(CPUState *env, uint64_t rip)
 
 void kvm_tpr_access_report(CPUState *env, uint64_t rip, int is_write)
 {
+    cpu_synchronize_state(env);
     if (!instruction_is_ok(env, rip, is_write))
 	return;
     if (!bios_is_mapped(env, rip))
 	return;
-    if (!enable_vapic(env))
+    if (!kvm_tpr_enable_vapic(env))
 	return;
     patch_instruction(env, rip);
-}
-
-void kvm_tpr_vcpu_start(CPUState *env)
-{
-    kvm_enable_tpr_access_reporting(env->kvm_cpu_state.vcpu_ctx);
-    if (bios_enabled)
-	enable_vapic(env);
 }
 
 static void tpr_save(QEMUFile *f, void *s)
@@ -350,41 +328,51 @@ static int tpr_load(QEMUFile *f, void *s, int version_id)
         CPUState *env = first_cpu->next_cpu;
 
         for (env = first_cpu; env != NULL; env = env->next_cpu)
-            enable_vapic(env);
+            env->kvm_vcpu_update_vapic = 1;
     }
 
     return 0;
 }
 
+static void vtpr_ioport_write16(void *opaque, uint32_t addr, uint32_t val)
+{
+    CPUState *env = cpu_single_env;
+
+    cpu_synchronize_state(env);
+
+    vapic_bios_addr = ((env->segs[R_CS].base + env->eip) & ~(512 - 1)) + val;
+    bios_enabled = 0;
+}
+
 static void vtpr_ioport_write(void *opaque, uint32_t addr, uint32_t val)
 {
     CPUState *env = cpu_single_env;
-    struct kvm_regs regs;
-    struct kvm_sregs sregs;
     uint32_t rip;
 
-    kvm_get_regs(env->kvm_cpu_state.vcpu_ctx, &regs);
-    rip = regs.rip - 2;
+    cpu_synchronize_state(env);
+
+    rip = env->eip - 2;
     write_byte_virt(env, rip, 0x66);
     write_byte_virt(env, rip + 1, 0x90);
     if (bios_enabled)
 	return;
     if (!bios_is_mapped(env, rip))
 	printf("bios not mapped?\n");
-    kvm_get_sregs(env->kvm_cpu_state.vcpu_ctx, &sregs);
     for (addr = 0xfffff000u; addr >= 0x80000000u; addr -= 4096)
-	if (map_addr(&sregs, addr, NULL) == 0xfee00000u) {
+	if (map_addr(env, addr, NULL) == 0xfee00000u) {
 	    real_tpr = addr + 0x80;
 	    break;
 	}
     bios_enabled = 1;
     update_vbios_real_tpr();
-    enable_vapic(env);
+    kvm_tpr_enable_vapic(env);
 }
 
-void kvm_tpr_opt_setup(void)
+static void kvm_tpr_opt_setup(void)
 {
-    register_savevm("kvm-tpr-opt", 0, 1, tpr_save, tpr_load, NULL);
+    register_savevm(NULL, "kvm-tpr-opt", 0, 1, tpr_save, tpr_load, NULL);
     register_ioport_write(0x7e, 1, 1, vtpr_ioport_write, NULL);
+    register_ioport_write(0x7e, 2, 2, vtpr_ioport_write16, NULL);
 }
 
+device_init(kvm_tpr_opt_setup);

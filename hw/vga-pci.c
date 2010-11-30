@@ -28,38 +28,27 @@
 #include "vga_int.h"
 #include "pixel_ops.h"
 #include "qemu-timer.h"
+#include "loader.h"
 
 typedef struct PCIVGAState {
     PCIDevice dev;
     VGACommonState vga;
 } PCIVGAState;
 
-static void pci_vga_save(QEMUFile *f, void *opaque)
-{
-    PCIVGAState *s = opaque;
-
-    pci_device_save(&s->dev, f);
-    vga_common_save(f, &s->vga);
-}
-
-static int pci_vga_load(QEMUFile *f, void *opaque, int version_id)
-{
-    PCIVGAState *s = opaque;
-    int ret;
-
-    if (version_id > 2)
-        return -EINVAL;
-
-    if (version_id >= 2) {
-        ret = pci_device_load(&s->dev, f);
-        if (ret < 0)
-            return ret;
+static const VMStateDescription vmstate_vga_pci = {
+    .name = "vga",
+    .version_id = 2,
+    .minimum_version_id = 2,
+    .minimum_version_id_old = 2,
+    .fields      = (VMStateField []) {
+        VMSTATE_PCI_DEVICE(dev, PCIVGAState),
+        VMSTATE_STRUCT(vga, PCIVGAState, 0, vmstate_vga_common, VGACommonState),
+        VMSTATE_END_OF_LIST()
     }
-    return vga_common_load(f, &s->vga, version_id);
-}
+};
 
 static void vga_map(PCIDevice *pci_dev, int region_num,
-                    uint32_t addr, uint32_t size, int type)
+                    pcibus_t addr, pcibus_t size, int type)
 {
     PCIVGAState *d = (PCIVGAState *)pci_dev;
     VGACommonState *s = &d->vga;
@@ -95,7 +84,6 @@ static int pci_vga_initfn(PCIDevice *dev)
      // vga + console init
      vga_common_init(s, VGA_RAM_SIZE);
      vga_init(s);
-     register_savevm("vga", 0, 2, pci_vga_save, pci_vga_load, d);
 
      s->ds = graphic_console_init(s->update, s->invalidate,
                                   s->screen_dump, s->text_update, s);
@@ -104,11 +92,10 @@ static int pci_vga_initfn(PCIDevice *dev)
      pci_config_set_vendor_id(pci_conf, PCI_VENDOR_ID_QEMU);
      pci_config_set_device_id(pci_conf, PCI_DEVICE_ID_QEMU_VGA);
      pci_config_set_class(pci_conf, PCI_CLASS_DISPLAY_VGA);
-     pci_conf[PCI_HEADER_TYPE] = PCI_HEADER_TYPE_NORMAL; // header_type
 
      /* XXX: VGA_RAM_SIZE must be a power of two */
      pci_register_bar(&d->dev, 0, VGA_RAM_SIZE,
-                      PCI_ADDRESS_SPACE_MEM_PREFETCH, vga_map);
+                      PCI_BASE_ADDRESS_MEM_PREFETCH, vga_map);
 
      if (s->bios_size) {
         unsigned int bios_total_size;
@@ -117,8 +104,12 @@ static int pci_vga_initfn(PCIDevice *dev)
         while (bios_total_size < s->bios_size)
             bios_total_size <<= 1;
         pci_register_bar(&d->dev, PCI_ROM_SLOT, bios_total_size,
-                         PCI_ADDRESS_SPACE_MEM_PREFETCH, vga_map);
+                         PCI_BASE_ADDRESS_MEM_PREFETCH, vga_map);
      }
+
+    vga_init_vbe(s);
+     /* ROM BIOS */
+     rom_add_vga(VGABIOS_FILENAME);
      return 0;
 }
 
@@ -129,7 +120,7 @@ int pci_vga_init(PCIBus *bus,
 
     dev = pci_create(bus, -1, "VGA");
     qdev_prop_set_uint32(&dev->qdev, "bios-offset", vga_bios_offset);
-    qdev_prop_set_uint32(&dev->qdev, "bios-size", vga_bios_offset);
+    qdev_prop_set_uint32(&dev->qdev, "bios-size", vga_bios_size);
     qdev_init_nofail(&dev->qdev);
 
     return 0;
@@ -138,6 +129,7 @@ int pci_vga_init(PCIBus *bus,
 static PCIDeviceInfo vga_info = {
     .qdev.name    = "VGA",
     .qdev.size    = sizeof(PCIVGAState),
+    .qdev.vmsd    = &vmstate_vga_pci,
     .init         = pci_vga_initfn,
     .config_write = pci_vga_write_config,
     .qdev.props   = (Property[]) {

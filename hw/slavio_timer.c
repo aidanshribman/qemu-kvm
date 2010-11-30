@@ -88,8 +88,8 @@ typedef struct TimerContext {
 #define TIMER_MAX_COUNT32  0x7ffffe00ULL
 #define TIMER_REACHED      0x80000000
 #define TIMER_PERIOD       500ULL // 500ns
-#define LIMIT_TO_PERIODS(l) ((l) >> 9)
-#define PERIODS_TO_LIMIT(l) ((l) << 9)
+#define LIMIT_TO_PERIODS(l) (((l) >> 9) - 1)
+#define PERIODS_TO_LIMIT(l) (((l) + 1) << 9)
 
 static int slavio_timer_is_user(TimerContext *tc)
 {
@@ -127,8 +127,12 @@ static void slavio_timer_irq(void *opaque)
 
     slavio_timer_get_out(t);
     DPRINTF("callback: count %x%08x\n", t->counthigh, t->count);
-    t->reached = TIMER_REACHED;
-    if (!slavio_timer_is_user(tc)) {
+    /* if limit is 0 (free-run), there will be no match */
+    if (t->limit != 0) {
+        t->reached = TIMER_REACHED;
+    }
+    /* there is no interrupt if user timer or free-run */
+    if (!slavio_timer_is_user(tc) && t->limit != 0) {
         qemu_irq_raise(t->irq);
     }
 }
@@ -362,9 +366,9 @@ static const VMStateDescription vmstate_slavio_timer = {
     }
 };
 
-static void slavio_timer_reset(void *opaque)
+static void slavio_timer_reset(DeviceState *d)
 {
-    SLAVIO_TIMERState *s = opaque;
+    SLAVIO_TIMERState *s = container_of(d, SLAVIO_TIMERState, busdev.qdev);
     unsigned int i;
     CPUTimerState *curr_timer;
 
@@ -373,12 +377,12 @@ static void slavio_timer_reset(void *opaque)
         curr_timer->limit = 0;
         curr_timer->count = 0;
         curr_timer->reached = 0;
-        if (i < s->num_cpus) {
+        if (i <= s->num_cpus) {
             ptimer_set_limit(curr_timer->timer,
                              LIMIT_TO_PERIODS(TIMER_MAX_COUNT32), 1);
             ptimer_run(curr_timer->timer, 0);
+            curr_timer->running = 1;
         }
-        curr_timer->running = 1;
     }
     s->cputimer_mode = 0;
 }
@@ -411,9 +415,6 @@ static int slavio_timer_init1(SysBusDevice *dev)
         sysbus_init_irq(dev, &s->cputimer[i].irq);
     }
 
-    vmstate_register(-1, &vmstate_slavio_timer, s);
-    qemu_register_reset(slavio_timer_reset, s);
-    slavio_timer_reset(s);
     return 0;
 }
 
@@ -421,6 +422,8 @@ static SysBusDeviceInfo slavio_timer_info = {
     .init = slavio_timer_init1,
     .qdev.name  = "slavio_timer",
     .qdev.size  = sizeof(SLAVIO_TIMERState),
+    .qdev.vmsd  = &vmstate_slavio_timer,
+    .qdev.reset = slavio_timer_reset,
     .qdev.props = (Property[]) {
         DEFINE_PROP_UINT32("num_cpus",  SLAVIO_TIMERState, num_cpus,  0),
         DEFINE_PROP_END_OF_LIST(),

@@ -185,11 +185,10 @@ static void slavio_intctlm_mem_writel(void *opaque, target_phys_addr_t addr,
                 s->intregm_disabled);
         slavio_check_interrupts(s, 1);
         break;
-    case 3: // set (disable, clear pending)
+    case 3: // set (disable; doesn't affect pending)
         // Force clear unused bits
         val &= MASTER_IRQ_MASK;
         s->intregm_disabled |= val;
-        s->intregm_pending &= ~val;
         slavio_check_interrupts(s, 1);
         DPRINTF("Disabled master irq mask %x, curmask %x\n", val,
                 s->intregm_disabled);
@@ -290,9 +289,12 @@ static void slavio_check_interrupts(SLAVIO_INTCTLState *s, int set_irqs)
             }
         }
 
-        /* Level 15 and CPU timer interrupts are not maskable */
-        pil_pending |= s->slaves[i].intreg_pending &
-            (CPU_IRQ_INT15_IN | CPU_IRQ_TIMER_IN);
+        /* Level 15 and CPU timer interrupts are only masked when
+           the MASTER_DISABLE bit is set */
+        if (!(s->intregm_disabled & MASTER_DISABLE)) {
+            pil_pending |= s->slaves[i].intreg_pending &
+                (CPU_IRQ_INT15_IN | CPU_IRQ_TIMER_IN);
+        }
 
         /* Add soft interrupts */
         pil_pending |= (s->slaves[i].intreg_pending & CPU_SOFTIRQ_MASK) >> 16;
@@ -409,9 +411,9 @@ static const VMStateDescription vmstate_intctl = {
     }
 };
 
-static void slavio_intctl_reset(void *opaque)
+static void slavio_intctl_reset(DeviceState *d)
 {
-    SLAVIO_INTCTLState *s = opaque;
+    SLAVIO_INTCTLState *s = container_of(d, SLAVIO_INTCTLState, busdev.qdev);
     int i;
 
     for (i = 0; i < MAX_CPUS; i++) {
@@ -446,9 +448,7 @@ static int slavio_intctl_init1(SysBusDevice *dev)
         s->slaves[i].cpu = i;
         s->slaves[i].master = s;
     }
-    vmstate_register(-1, &vmstate_intctl, s);
-    qemu_register_reset(slavio_intctl_reset, s);
-    slavio_intctl_reset(s);
+
     return 0;
 }
 
@@ -456,6 +456,8 @@ static SysBusDeviceInfo slavio_intctl_info = {
     .init = slavio_intctl_init1,
     .qdev.name  = "slavio_intctl",
     .qdev.size  = sizeof(SLAVIO_INTCTLState),
+    .qdev.vmsd  = &vmstate_intctl,
+    .qdev.reset = slavio_intctl_reset,
 };
 
 static void slavio_intctl_register_devices(void)

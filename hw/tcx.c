@@ -22,7 +22,6 @@
  * THE SOFTWARE.
  */
 
-#include "sun4m.h"
 #include "console.h"
 #include "pixel_ops.h"
 #include "sysbus.h"
@@ -162,7 +161,7 @@ static inline void tcx24_draw_line32(TCXState *s1, uint8_t *d,
             p8++;
             b = *p8++;
             g = *p8++;
-            r = *p8++;
+            r = *p8;
             if (bgr)
                 dval = rgb_to_pixel32bgr(r, g, b);
             else
@@ -511,7 +510,7 @@ static int tcx_init1(SysBusDevice *dev)
     int size;
     uint8_t *vram_base;
 
-    vram_offset = qemu_ram_alloc(s->vram_size * (1 + 4 + 4));
+    vram_offset = qemu_ram_alloc(NULL, "tcx.vram", s->vram_size * (1 + 4 + 4));
     vram_base = qemu_get_ram_ptr(vram_offset);
     s->vram_offset = vram_offset;
 
@@ -560,7 +559,6 @@ static int tcx_init1(SysBusDevice *dev)
                                      tcx_screen_dump, NULL, s);
     }
 
-    tcx_reset(&s->busdev.qdev);
     qemu_console_resize(s->ds, s->width, s->height);
     return 0;
 }

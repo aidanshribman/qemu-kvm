@@ -25,6 +25,7 @@
 #include "hw.h"
 #include "console.h"
 #include "usb.h"
+#include "sysemu.h"
 
 /* HID interface requests */
 #define GET_REPORT   0xa101
@@ -66,6 +67,7 @@ typedef struct USBHIDState {
     int kind;
     int protocol;
     uint8_t idle;
+    int64_t next_idle_clock;
     int changed;
     void *datain_opaque;
     void (*datain)(void *);
@@ -100,7 +102,7 @@ static const uint8_t qemu_mouse_config_descriptor[] = {
 	0x01,       /*  u8  bNumInterfaces; (1) */
 	0x01,       /*  u8  bConfigurationValue; */
 	0x04,       /*  u8  iConfiguration; */
-	0xa0,       /*  u8  bmAttributes;
+	0xe0,       /*  u8  bmAttributes;
 				 Bit 7: must be set,
 				     6: Self-powered,
 				     5: Remote wakeup,
@@ -510,8 +512,7 @@ static int usb_mouse_poll(USBHIDState *hs, uint8_t *buf, int len)
     USBMouseState *s = &hs->ptr;
 
     if (!s->mouse_grabbed) {
-	s->eh_entry = qemu_add_mouse_event_handler(usb_mouse_event, hs,
-                                                  0, "QEMU USB Mouse");
+        qemu_activate_mouse_event_handler(s->eh_entry);
 	s->mouse_grabbed = 1;
     }
 
@@ -552,8 +553,7 @@ static int usb_tablet_poll(USBHIDState *hs, uint8_t *buf, int len)
     USBMouseState *s = &hs->ptr;
 
     if (!s->mouse_grabbed) {
-	s->eh_entry = qemu_add_mouse_event_handler(usb_tablet_event, hs,
-                                                  1, "QEMU USB Tablet");
+        qemu_activate_mouse_event_handler(s->eh_entry);
 	s->mouse_grabbed = 1;
     }
 
@@ -599,12 +599,20 @@ static int usb_keyboard_poll(USBKeyboardState *s, uint8_t *buf, int len)
 static int usb_keyboard_write(USBKeyboardState *s, uint8_t *buf, int len)
 {
     if (len > 0) {
+        int ledstate = 0;
         /* 0x01: Num Lock LED
          * 0x02: Caps Lock LED
          * 0x04: Scroll Lock LED
          * 0x08: Compose LED
          * 0x10: Kana LED */
         s->leds = buf[0];
+        if (s->leds & 0x04)
+            ledstate |= QEMU_SCROLL_LOCK_LED;
+        if (s->leds & 0x01)
+            ledstate |= QEMU_NUM_LOCK_LED;
+        if (s->leds & 0x02)
+            ledstate |= QEMU_CAPS_LOCK_LED;
+        kbd_put_ledstate(ledstate);
     }
     return 0;
 }
@@ -628,6 +636,11 @@ static void usb_keyboard_handle_reset(USBDevice *dev)
 
     qemu_add_kbd_event_handler(usb_keyboard_event, s);
     s->protocol = 1;
+}
+
+static void usb_hid_set_next_idle(USBHIDState *s, int64_t curtime)
+{
+    s->next_idle_clock = curtime + (get_ticks_per_sec() * s->idle * 4) / 1000;
 }
 
 static int usb_hid_handle_control(USBDevice *dev, int request, int value,
@@ -701,7 +714,7 @@ static int usb_hid_handle_control(USBDevice *dev, int request, int value,
                 break;
             case 2:
                 /* product description */
-                ret = set_usb_string(data, s->dev.devname);
+                ret = set_usb_string(data, s->dev.product_desc);
                 break;
             case 3:
                 /* vendor description */
@@ -795,6 +808,7 @@ static int usb_hid_handle_control(USBDevice *dev, int request, int value,
         break;
     case SET_IDLE:
         s->idle = (uint8_t) (value >> 8);
+        usb_hid_set_next_idle(s, qemu_get_clock(vm_clock));
         ret = 0;
         break;
     default:
@@ -813,9 +827,10 @@ static int usb_hid_handle_data(USBDevice *dev, USBPacket *p)
     switch(p->pid) {
     case USB_TOKEN_IN:
         if (p->devep == 1) {
-            /* TODO: Implement finite idle delays.  */
-            if (!(s->changed || s->idle))
+            int64_t curtime = qemu_get_clock(vm_clock);
+            if (!s->changed && (!s->idle || s->next_idle_clock - curtime > 0))
                 return USB_RET_NAK;
+            usb_hid_set_next_idle(s, curtime);
             s->changed = 0;
             if (s->kind == USB_MOUSE)
                 ret = usb_mouse_poll(s, p->data, p->len);
@@ -840,9 +855,13 @@ static void usb_hid_handle_destroy(USBDevice *dev)
 {
     USBHIDState *s = (USBHIDState *)dev;
 
-    if (s->kind != USB_KEYBOARD)
+    switch(s->kind) {
+    case USB_KEYBOARD:
+        qemu_remove_kbd_event_handler();
+        break;
+    default:
         qemu_remove_mouse_event_handler(s->ptr.eh_entry);
-    /* TODO: else */
+    }
 }
 
 static int usb_hid_initfn(USBDevice *dev, int kind)
@@ -850,6 +869,15 @@ static int usb_hid_initfn(USBDevice *dev, int kind)
     USBHIDState *s = DO_UPCAST(USBHIDState, dev, dev);
     s->dev.speed = USB_SPEED_FULL;
     s->kind = kind;
+
+    if (s->kind == USB_MOUSE) {
+        s->ptr.eh_entry = qemu_add_mouse_event_handler(usb_mouse_event, s,
+                                                       0, "QEMU USB Mouse");
+    } else if (s->kind == USB_TABLET) {
+        s->ptr.eh_entry = qemu_add_mouse_event_handler(usb_tablet_event, s,
+                                                       1, "QEMU USB Tablet");
+    }
+        
     /* Force poll routine to be run and grab input the first time.  */
     s->changed = 1;
     return 0;
@@ -880,8 +908,9 @@ void usb_hid_datain_cb(USBDevice *dev, void *opaque, void (*datain)(void *))
 
 static struct USBDeviceInfo hid_info[] = {
     {
-        .qdev.name      = "QEMU USB Tablet",
-        .qdev.alias     = "usb-tablet",
+        .product_desc   = "QEMU USB Tablet",
+        .qdev.name      = "usb-tablet",
+        .usbdevice_name = "tablet",
         .qdev.size      = sizeof(USBHIDState),
         .init           = usb_tablet_initfn,
         .handle_packet  = usb_generic_handle_packet,
@@ -890,8 +919,9 @@ static struct USBDeviceInfo hid_info[] = {
         .handle_data    = usb_hid_handle_data,
         .handle_destroy = usb_hid_handle_destroy,
     },{
-        .qdev.name      = "QEMU USB Mouse",
-        .qdev.alias     = "usb-mouse",
+        .product_desc   = "QEMU USB Mouse",
+        .qdev.name      = "usb-mouse",
+        .usbdevice_name = "mouse",
         .qdev.size      = sizeof(USBHIDState),
         .init           = usb_mouse_initfn,
         .handle_packet  = usb_generic_handle_packet,
@@ -900,8 +930,9 @@ static struct USBDeviceInfo hid_info[] = {
         .handle_data    = usb_hid_handle_data,
         .handle_destroy = usb_hid_handle_destroy,
     },{
-        .qdev.name      = "QEMU USB Keyboard",
-        .qdev.alias     = "usb-kbd",
+        .product_desc   = "QEMU USB Keyboard",
+        .qdev.name      = "usb-kbd",
+        .usbdevice_name = "keyboard",
         .qdev.size      = sizeof(USBHIDState),
         .init           = usb_keyboard_initfn,
         .handle_packet  = usb_generic_handle_packet,

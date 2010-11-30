@@ -30,6 +30,7 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <signal.h>
+#include <libgen.h>
 
 #define SOCKET_PATH    "/var/lock/qemu-nbd-%s"
 
@@ -111,9 +112,12 @@ static int find_partition(BlockDriverState *bs, int partition,
     uint8_t data[512];
     int i;
     int ext_partnum = 4;
+    int ret;
 
-    if (bdrv_read(bs, 0, data, 1))
-        errx(EINVAL, "error while reading");
+    if ((ret = bdrv_read(bs, 0, data, 1)) < 0) {
+        errno = -ret;
+        err(EXIT_FAILURE, "error while reading");
+    }
 
     if (data[510] != 0x55 || data[511] != 0xaa) {
         errno = -EINVAL;
@@ -131,8 +135,10 @@ static int find_partition(BlockDriverState *bs, int partition,
             uint8_t data1[512];
             int j;
 
-            if (bdrv_read(bs, mbr[i].start_sector_abs, data1, 1))
-                errx(EINVAL, "error while reading");
+            if ((ret = bdrv_read(bs, mbr[i].start_sector_abs, data1, 1)) < 0) {
+                errno = -ret;
+                err(EXIT_FAILURE, "error while reading");
+            }
 
             for (j = 0; j < 4; j++) {
                 read_partition(&data1[446 + 16 * j], &ext[j]);
@@ -212,7 +218,7 @@ int main(int argc, char **argv)
     int opt_ind = 0;
     int li;
     char *end;
-    int flags = 0;
+    int flags = BDRV_O_RDWR;
     int partition = -1;
     int ret;
     int shared = 1;
@@ -239,36 +245,37 @@ int main(int argc, char **argv)
         case 'p':
             li = strtol(optarg, &end, 0);
             if (*end) {
-                errx(EINVAL, "Invalid port `%s'", optarg);
+                errx(EXIT_FAILURE, "Invalid port `%s'", optarg);
             }
             if (li < 1 || li > 65535) {
-                errx(EINVAL, "Port out of range `%s'", optarg);
+                errx(EXIT_FAILURE, "Port out of range `%s'", optarg);
             }
             port = (uint16_t)li;
             break;
         case 'o':
                 dev_offset = strtoll (optarg, &end, 0);
             if (*end) {
-                errx(EINVAL, "Invalid offset `%s'", optarg);
+                errx(EXIT_FAILURE, "Invalid offset `%s'", optarg);
             }
             if (dev_offset < 0) {
-                errx(EINVAL, "Offset must be positive `%s'", optarg);
+                errx(EXIT_FAILURE, "Offset must be positive `%s'", optarg);
             }
             break;
         case 'r':
             readonly = true;
+            flags &= ~BDRV_O_RDWR;
             break;
         case 'P':
             partition = strtol(optarg, &end, 0);
             if (*end)
-                errx(EINVAL, "Invalid partition `%s'", optarg);
+                errx(EXIT_FAILURE, "Invalid partition `%s'", optarg);
             if (partition < 1 || partition > 8)
-                errx(EINVAL, "Invalid partition %d", partition);
+                errx(EXIT_FAILURE, "Invalid partition %d", partition);
             break;
         case 'k':
             socket = optarg;
             if (socket[0] != '/')
-                errx(EINVAL, "socket path must be absolute\n");
+                errx(EXIT_FAILURE, "socket path must be absolute\n");
             break;
         case 'd':
             disconnect = true;
@@ -279,10 +286,10 @@ int main(int argc, char **argv)
         case 'e':
             shared = strtol(optarg, &end, 0);
             if (*end) {
-                errx(EINVAL, "Invalid shared device number '%s'", optarg);
+                errx(EXIT_FAILURE, "Invalid shared device number '%s'", optarg);
             }
             if (shared < 1) {
-                errx(EINVAL, "Shared device number must be greater than 0\n");
+                errx(EXIT_FAILURE, "Shared device number must be greater than 0\n");
             }
             break;
 	case 't':
@@ -300,13 +307,13 @@ int main(int argc, char **argv)
             exit(0);
             break;
         case '?':
-            errx(EINVAL, "Try `%s --help' for more information.",
+            errx(EXIT_FAILURE, "Try `%s --help' for more information.",
                  argv[0]);
         }
     }
 
     if ((argc - optind) != 1) {
-        errx(EINVAL, "Invalid number of argument.\n"
+        errx(EXIT_FAILURE, "Invalid number of argument.\n"
              "Try `%s --help' for more information.",
              argv[0]);
     }
@@ -314,7 +321,7 @@ int main(int argc, char **argv)
     if (disconnect) {
         fd = open(argv[optind], O_RDWR);
         if (fd == -1)
-            errx(errno, "Cannot open %s", argv[optind]);
+            err(EXIT_FAILURE, "Cannot open %s", argv[optind]);
 
         nbd_disconnect(fd);
 
@@ -331,28 +338,36 @@ int main(int argc, char **argv)
     if (bs == NULL)
         return 1;
 
-    if (bdrv_open(bs, argv[optind], flags) == -1)
-        return 1;
+    if ((ret = bdrv_open(bs, argv[optind], flags, NULL)) < 0) {
+        errno = -ret;
+        err(EXIT_FAILURE, "Failed to bdrv_open '%s'", argv[optind]);
+    }
 
     fd_size = bs->total_sectors * 512;
 
     if (partition != -1 &&
         find_partition(bs, partition, &dev_offset, &fd_size))
-        errx(errno, "Could not find partition %d", partition);
+        err(EXIT_FAILURE, "Could not find partition %d", partition);
 
     if (device) {
         pid_t pid;
         int sock;
 
+        /* want to fail before daemonizing */
+        if (access(device, R_OK|W_OK) == -1) {
+            err(EXIT_FAILURE, "Could not access '%s'", device);
+        }
+
         if (!verbose) {
             /* detach client and server */
             if (daemon(0, 0) == -1) {
-                errx(errno, "Failed to daemonize");
+                err(EXIT_FAILURE, "Failed to daemonize");
             }
         }
 
         if (socket == NULL) {
-            sprintf(sockpath, SOCKET_PATH, basename(device));
+            snprintf(sockpath, sizeof(sockpath), SOCKET_PATH,
+                     basename(device));
             socket = sockpath;
         }
 
@@ -369,8 +384,10 @@ int main(int argc, char **argv)
             do {
                 sock = unix_socket_outgoing(socket);
                 if (sock == -1) {
-                    if (errno != ENOENT && errno != ECONNREFUSED)
+                    if (errno != ENOENT && errno != ECONNREFUSED) {
+                        ret = 1;
                         goto out;
+                    }
                     sleep(1);	/* wait children */
                 }
             } while (sock == -1);
@@ -426,7 +443,7 @@ int main(int argc, char **argv)
 
     data = qemu_memalign(512, NBD_BUFFER_SIZE);
     if (data == NULL)
-        errx(ENOMEM, "Cannot allocate data buffer");
+        errx(EXIT_FAILURE, "Cannot allocate data buffer");
 
     do {
 
@@ -467,7 +484,7 @@ int main(int argc, char **argv)
             }
         }
     } while (persistent || nb_fds > 1);
-    qemu_free(data);
+    qemu_vfree(data);
 
     close(sharing_fds[0]);
     bdrv_close(bs);

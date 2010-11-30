@@ -316,8 +316,10 @@ static uint32_t cuda_readb(void *opaque, target_phys_addr_t addr)
         val = s->anh;
         break;
     }
-    if (addr != 13 || val != 0)
+    if (addr != 13 || val != 0) {
         CUDA_DPRINTF("read: reg=0x%x val=%02x\n", (int)addr, val);
+    }
+
     return val;
 }
 
@@ -761,7 +763,6 @@ void cuda_init (int *cuda_mem_index, qemu_irq irq)
 
     s->adb_poll_timer = qemu_new_timer(vm_clock, cuda_adb_poll, s);
     *cuda_mem_index = cpu_register_io_memory(cuda_read, cuda_write, s);
-    register_savevm("cuda", -1, 1, cuda_save, cuda_load, s);
+    register_savevm(NULL, "cuda", -1, 1, cuda_save, cuda_load, s);
     qemu_register_reset(cuda_reset, s);
-    cuda_reset(s);
 }

@@ -32,6 +32,8 @@ int inet_aton(const char *cp, struct in_addr *ia);
 #include "qemu-option.h"
 
 /* misc helpers */
+int qemu_socket(int domain, int type, int protocol);
+int qemu_accept(int s, struct sockaddr *addr, socklen_t *addrlen);
 void socket_set_nonblock(int fd);
 int send_all(int fd, const void *buf, int len1);
 
@@ -42,6 +44,7 @@ int inet_listen(const char *str, char *ostr, int olen,
 int inet_connect_opts(QemuOpts *opts);
 int inet_connect(const char *str, int socktype);
 int inet_dgram_opts(QemuOpts *opts);
+const char *inet_strfamily(int family);
 
 int unix_listen_opts(QemuOpts *opts);
 int unix_listen(const char *path, char *ostr, int olen);
@@ -53,5 +56,6 @@ int parse_host_port(struct sockaddr_in *saddr, const char *str);
 int parse_host_src_port(struct sockaddr_in *haddr,
                         struct sockaddr_in *saddr,
                         const char *str);
+int socket_init(void);
 
 #endif /* QEMU_SOCKET_H */

@@ -21,12 +21,12 @@
 #include <ctype.h>
 #include <errno.h>
 #include <sys/time.h>
+#include <getopt.h>
 
 #include "cmd.h"
+#include "qemu-aio.h"
 
 #define _(x)	x	/* not gettext support yet */
-
-extern int optind;
 
 /* from libxcmd/command.c */
 
@@ -150,10 +150,20 @@ add_args_command(
 	args_func = af;
 }
 
+static void prep_fetchline(void *opaque)
+{
+    int *fetchable = opaque;
+
+    qemu_aio_set_fd_handler(STDIN_FILENO, NULL, NULL, NULL, NULL, NULL);
+    *fetchable= 1;
+}
+
+static char *get_prompt(void);
+
 void
 command_loop(void)
 {
-	int		c, i, j = 0, done = 0;
+	int		c, i, j = 0, done = 0, fetchable = 0, prompted = 0;
 	char		*input;
 	char		**v;
 	const cmdinfo_t	*ct;
@@ -187,7 +197,21 @@ command_loop(void)
 		free(cmdline);
 		return;
 	}
+
 	while (!done) {
+        if (!prompted) {
+            printf("%s", get_prompt());
+            fflush(stdout);
+            qemu_aio_set_fd_handler(STDIN_FILENO, prep_fetchline, NULL, NULL,
+                                    NULL, &fetchable);
+            prompted = 1;
+        }
+
+        qemu_aio_wait();
+
+        if (!fetchable) {
+            continue;
+        }
 		if ((input = fetchline()) == NULL)
 			break;
 		v = breakline(input, &c);
@@ -200,7 +224,11 @@ command_loop(void)
 					v[0]);
 		}
 		doneline(input, v);
+
+        prompted = 0;
+        fetchable = 0;
 	}
+    qemu_aio_set_fd_handler(STDIN_FILENO, NULL, NULL, NULL, NULL, NULL);
 }
 
 /* from libxcmd/input.c */
@@ -271,8 +299,6 @@ fetchline(void)
 
 	if (!line)
 		return NULL;
-	printf("%s", get_prompt());
-	fflush(stdout);
 	if (!fgets(line, MAXREADLINESZ, stdin)) {
 		free(line);
 		return NULL;
@@ -288,7 +314,8 @@ static char *qemu_strsep(char **input, const char *delim)
 {
     char *result = *input;
     if (result != NULL) {
-        char *p = result;
+        char *p;
+
         for (p = result; *p != '\0'; p++) {
             if (strchr(delim, *p)) {
                 break;

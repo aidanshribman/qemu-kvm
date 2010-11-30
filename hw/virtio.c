@@ -23,8 +23,11 @@
 /* QEMU doesn't strictly need write barriers since everything runs in
  * lock-step.  We'll leave the calls to wmb() in though to make it obvious for
  * KVM or if kqemu gets SMP support.
+ * In any case, we must prevent the compiler from reordering the code.
+ * TODO: we likely need some rmb()/mb() as well.
  */
-#define wmb() do { } while (0)
+
+#define wmb() __asm__ __volatile__("": : :"memory")
 
 typedef struct VRingDesc
 {
@@ -70,9 +73,10 @@ struct VirtQueue
     int inuse;
     uint16_t vector;
     void (*handle_output)(VirtIODevice *vdev, VirtQueue *vq);
+    VirtIODevice *vdev;
+    EventNotifier guest_notifier;
+    EventNotifier host_notifier;
 };
-
-#define VIRTIO_PCI_QUEUE_MAX        16
 
 /* virt queue functions */
 static void virtqueue_init(VirtQueue *vq)
@@ -356,11 +360,26 @@ int virtqueue_avail_bytes(VirtQueue *vq, int in_bytes, int out_bytes)
     return 0;
 }
 
+void virtqueue_map_sg(struct iovec *sg, target_phys_addr_t *addr,
+    size_t num_sg, int is_write)
+{
+    unsigned int i;
+    target_phys_addr_t len;
+
+    for (i = 0; i < num_sg; i++) {
+        len = sg[i].iov_len;
+        sg[i].iov_base = cpu_physical_memory_map(addr[i], &len, is_write);
+        if (sg[i].iov_base == NULL || len != sg[i].iov_len) {
+            fprintf(stderr, "virtio: trying to map MMIO memory\n");
+            exit(1);
+        }
+    }
+}
+
 int virtqueue_pop(VirtQueue *vq, VirtQueueElement *elem)
 {
     unsigned int i, head, max;
     target_phys_addr_t desc_pa = vq->vring.desc;
-    target_phys_addr_t len;
 
     if (!virtqueue_num_heads(vq, vq->last_avail_idx))
         return 0;
@@ -384,28 +403,19 @@ int virtqueue_pop(VirtQueue *vq, VirtQueueElement *elem)
         i = 0;
     }
 
+    /* Collect all the descriptors */
     do {
         struct iovec *sg;
-        int is_write = 0;
 
         if (vring_desc_flags(desc_pa, i) & VRING_DESC_F_WRITE) {
             elem->in_addr[elem->in_num] = vring_desc_addr(desc_pa, i);
             sg = &elem->in_sg[elem->in_num++];
-            is_write = 1;
-        } else
+        } else {
+            elem->out_addr[elem->out_num] = vring_desc_addr(desc_pa, i);
             sg = &elem->out_sg[elem->out_num++];
-
-        /* Grab the first descriptor, and check it's OK. */
-        sg->iov_len = vring_desc_len(desc_pa, i);
-        len = sg->iov_len;
-
-        sg->iov_base = cpu_physical_memory_map(vring_desc_addr(desc_pa, i),
-                                               &len, is_write);
-
-        if (sg->iov_base == NULL || len != sg->iov_len) {
-            fprintf(stderr, "virtio: trying to map MMIO memory\n");
-            exit(1);
         }
+
+        sg->iov_len = vring_desc_len(desc_pa, i);
 
         /* If we've got too many, that implies a descriptor loop. */
         if ((elem->in_num + elem->out_num) > max) {
@@ -413,6 +423,10 @@ int virtqueue_pop(VirtQueue *vq, VirtQueueElement *elem)
             exit(1);
         }
     } while ((i = virtqueue_next_desc(desc_pa, i, max)) != max);
+
+    /* Now map what we have collected */
+    virtqueue_map_sg(elem->in_sg, elem->in_addr, elem->in_num, 1);
+    virtqueue_map_sg(elem->out_sg, elem->out_addr, elem->out_num, 0);
 
     elem->index = head;
 
@@ -439,10 +453,12 @@ void virtio_reset(void *opaque)
     VirtIODevice *vdev = opaque;
     int i;
 
+    virtio_set_status(vdev, 0);
+
     if (vdev->reset)
         vdev->reset(vdev);
 
-    vdev->features = 0;
+    vdev->guest_features = 0;
     vdev->queue_sel = 0;
     vdev->status = 0;
     vdev->isr = 0;
@@ -591,11 +607,17 @@ VirtQueue *virtio_add_queue(VirtIODevice *vdev, int queue_size,
     return &vdev->vq[i];
 }
 
+void virtio_irq(VirtQueue *vq)
+{
+    vq->vdev->isr |= 0x01;
+    virtio_notify_vector(vq->vdev, vq->vector);
+}
+
 void virtio_notify(VirtIODevice *vdev, VirtQueue *vq)
 {
     /* Always notify when queue is empty (when feature acknowledge) */
     if ((vring_avail_flags(vq) & VRING_AVAIL_F_NO_INTERRUPT) &&
-        (!(vdev->features & (1 << VIRTIO_F_NOTIFY_ON_EMPTY)) ||
+        (!(vdev->guest_features & (1 << VIRTIO_F_NOTIFY_ON_EMPTY)) ||
          (vq->inuse || vring_avail_idx(vq) != vq->last_avail_idx)))
         return;
 
@@ -622,7 +644,7 @@ void virtio_save(VirtIODevice *vdev, QEMUFile *f)
     qemu_put_8s(f, &vdev->status);
     qemu_put_8s(f, &vdev->isr);
     qemu_put_be16s(f, &vdev->queue_sel);
-    qemu_put_be32s(f, &vdev->features);
+    qemu_put_be32s(f, &vdev->guest_features);
     qemu_put_be32(f, vdev->config_len);
     qemu_put_buffer(f, vdev->config, vdev->config_len);
 
@@ -648,6 +670,9 @@ void virtio_save(VirtIODevice *vdev, QEMUFile *f)
 int virtio_load(VirtIODevice *vdev, QEMUFile *f)
 {
     int num, i, ret;
+    uint32_t features;
+    uint32_t supported_features =
+        vdev->binding->get_features(vdev->binding_opaque);
 
     if (vdev->binding->load_config) {
         ret = vdev->binding->load_config(vdev->binding_opaque, f);
@@ -658,7 +683,15 @@ int virtio_load(VirtIODevice *vdev, QEMUFile *f)
     qemu_get_8s(f, &vdev->status);
     qemu_get_8s(f, &vdev->isr);
     qemu_get_be16s(f, &vdev->queue_sel);
-    qemu_get_be32s(f, &vdev->features);
+    qemu_get_be32s(f, &features);
+    if (features & ~supported_features) {
+        fprintf(stderr, "Features 0x%x unsupported. Allowed features: 0x%x\n",
+                features, supported_features);
+        return -1;
+    }
+    if (vdev->set_features)
+        vdev->set_features(vdev, features);
+    vdev->guest_features = features;
     vdev->config_len = qemu_get_be32(f);
     qemu_get_buffer(f, vdev->config, vdev->config_len);
 
@@ -704,8 +737,10 @@ VirtIODevice *virtio_common_init(const char *name, uint16_t device_id,
     vdev->queue_sel = 0;
     vdev->config_vector = VIRTIO_NO_VECTOR;
     vdev->vq = qemu_mallocz(sizeof(VirtQueue) * VIRTIO_PCI_QUEUE_MAX);
-    for(i = 0; i < VIRTIO_PCI_QUEUE_MAX; i++)
+    for(i = 0; i < VIRTIO_PCI_QUEUE_MAX; i++) {
         vdev->vq[i].vector = VIRTIO_NO_VECTOR;
+        vdev->vq[i].vdev = vdev;
+    }
 
     vdev->name = name;
     vdev->config_len = config_size;
@@ -722,4 +757,71 @@ void virtio_bind_device(VirtIODevice *vdev, const VirtIOBindings *binding,
 {
     vdev->binding = binding;
     vdev->binding_opaque = opaque;
+}
+
+target_phys_addr_t virtio_queue_get_desc_addr(VirtIODevice *vdev, int n)
+{
+    return vdev->vq[n].vring.desc;
+}
+
+target_phys_addr_t virtio_queue_get_avail_addr(VirtIODevice *vdev, int n)
+{
+    return vdev->vq[n].vring.avail;
+}
+
+target_phys_addr_t virtio_queue_get_used_addr(VirtIODevice *vdev, int n)
+{
+    return vdev->vq[n].vring.used;
+}
+
+target_phys_addr_t virtio_queue_get_ring_addr(VirtIODevice *vdev, int n)
+{
+    return vdev->vq[n].vring.desc;
+}
+
+target_phys_addr_t virtio_queue_get_desc_size(VirtIODevice *vdev, int n)
+{
+    return sizeof(VRingDesc) * vdev->vq[n].vring.num;
+}
+
+target_phys_addr_t virtio_queue_get_avail_size(VirtIODevice *vdev, int n)
+{
+    return offsetof(VRingAvail, ring) +
+        sizeof(uint64_t) * vdev->vq[n].vring.num;
+}
+
+target_phys_addr_t virtio_queue_get_used_size(VirtIODevice *vdev, int n)
+{
+    return offsetof(VRingUsed, ring) +
+        sizeof(VRingUsedElem) * vdev->vq[n].vring.num;
+}
+
+target_phys_addr_t virtio_queue_get_ring_size(VirtIODevice *vdev, int n)
+{
+    return vdev->vq[n].vring.used - vdev->vq[n].vring.desc +
+	    virtio_queue_get_used_size(vdev, n);
+}
+
+uint16_t virtio_queue_get_last_avail_idx(VirtIODevice *vdev, int n)
+{
+    return vdev->vq[n].last_avail_idx;
+}
+
+void virtio_queue_set_last_avail_idx(VirtIODevice *vdev, int n, uint16_t idx)
+{
+    vdev->vq[n].last_avail_idx = idx;
+}
+
+VirtQueue *virtio_get_queue(VirtIODevice *vdev, int n)
+{
+    return vdev->vq + n;
+}
+
+EventNotifier *virtio_queue_get_guest_notifier(VirtQueue *vq)
+{
+    return &vq->guest_notifier;
+}
+EventNotifier *virtio_queue_get_host_notifier(VirtQueue *vq)
+{
+    return &vq->host_notifier;
 }

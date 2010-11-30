@@ -2,11 +2,9 @@
 #include "hw/boards.h"
 #include "hw/pc.h"
 #include "hw/isa.h"
-#include "host-utils.h"
 
 #include "exec-all.h"
 #include "kvm.h"
-#include "qemu-kvm.h"
 
 static const VMStateDescription vmstate_segment = {
     .name = "segment",
@@ -48,6 +46,22 @@ static const VMStateDescription vmstate_xmm_reg = {
 
 #define VMSTATE_XMM_REGS(_field, _state, _n)                         \
     VMSTATE_STRUCT_ARRAY(_field, _state, _n, 0, vmstate_xmm_reg, XMMReg)
+
+/* YMMH format is the same as XMM */
+static const VMStateDescription vmstate_ymmh_reg = {
+    .name = "ymmh_reg",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .minimum_version_id_old = 1,
+    .fields      = (VMStateField []) {
+        VMSTATE_UINT64(XMM_Q(0), XMMReg),
+        VMSTATE_UINT64(XMM_Q(1), XMMReg),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+#define VMSTATE_YMMH_REGS_VARS(_field, _state, _n, _v)                         \
+    VMSTATE_STRUCT_ARRAY(_field, _state, _n, _v, vmstate_ymmh_reg, XMMReg)
 
 static const VMStateDescription vmstate_mtrr_var = {
     .name = "mtrr_var",
@@ -117,7 +131,7 @@ static void put_fpreg(QEMUFile *f, void *opaque, size_t size)
     qemu_put_be16s(f, &exp);
 }
 
-const VMStateInfo vmstate_fpreg = {
+static const VMStateInfo vmstate_fpreg = {
     .name = "fpreg",
     .get  = get_fpreg,
     .put  = put_fpreg,
@@ -134,7 +148,7 @@ static int get_fpreg_1_mmx(QEMUFile *f, void *opaque, size_t size)
     return 0;
 }
 
-const VMStateInfo vmstate_fpreg_1_mmx = {
+static const VMStateInfo vmstate_fpreg_1_mmx = {
     .name = "fpreg_1_mmx",
     .get  = get_fpreg_1_mmx,
     .put  = put_fpreg_error,
@@ -150,7 +164,7 @@ static int get_fpreg_1_no_mmx(QEMUFile *f, void *opaque, size_t size)
     return 0;
 }
 
-const VMStateInfo vmstate_fpreg_1_no_mmx = {
+static const VMStateInfo vmstate_fpreg_1_no_mmx = {
     .name = "fpreg_1_no_mmx",
     .get  = get_fpreg_1_no_mmx,
     .put  = put_fpreg_error,
@@ -308,23 +322,20 @@ static void put_uint64_as_uint32(QEMUFile *f, void *pv, size_t size)
     qemu_put_be32(f, *v);
 }
 
-const VMStateInfo vmstate_hack_uint64_as_uint32 = {
+static const VMStateInfo vmstate_hack_uint64_as_uint32 = {
     .name = "uint64_as_uint32",
     .get  = get_uint64_as_uint32,
     .put  = put_uint64_as_uint32,
 };
 
 #define VMSTATE_HACK_UINT32(_f, _s, _t)                                  \
-    VMSTATE_SINGLE_TEST(_f, _s, _t, vmstate_hack_uint64_as_uint32, uint64_t)
+    VMSTATE_SINGLE_TEST(_f, _s, _t, 0, vmstate_hack_uint64_as_uint32, uint64_t)
 #endif
 
 static void cpu_pre_save(void *opaque)
 {
     CPUState *env = opaque;
-    int i, bit;
-
-    cpu_synchronize_state(env);
-    kvm_save_mpstate(env);
+    int i;
 
     /* FPU */
     env->fpus_vmstate = (env->fpus & ~0x3800) | (env->fpstt & 0x7) << 11;
@@ -338,25 +349,6 @@ static void cpu_pre_save(void *opaque)
 #else
     env->fpregs_format_vmstate = 1;
 #endif
-
-    /* There can only be one pending IRQ set in the bitmap at a time, so try
-       to find it and save its number instead (-1 for none). */
-    env->pending_irq_vmstate = -1;
-    for (i = 0; i < ARRAY_SIZE(env->interrupt_bitmap); i++) {
-        if (env->interrupt_bitmap[i]) {
-            bit = ctz64(env->interrupt_bitmap[i]);
-            env->pending_irq_vmstate = i * 64 + bit;
-            break;
-        }
-    }
-}
-
-static int cpu_pre_load(void *opaque)
-{
-    CPUState *env = opaque;
-
-    cpu_synchronize_state(env);
-    return 0;
 }
 
 static int cpu_post_load(void *opaque, int version_id)
@@ -377,27 +369,16 @@ static int cpu_post_load(void *opaque, int version_id)
     for (i = 0; i < 4; i++)
         hw_breakpoint_insert(env, i);
 
-    if (version_id >= 9) {
-        memset(&env->interrupt_bitmap, 0, sizeof(env->interrupt_bitmap));
-        if (env->pending_irq_vmstate >= 0) {
-            env->interrupt_bitmap[env->pending_irq_vmstate / 64] |=
-                (uint64_t)1 << (env->pending_irq_vmstate % 64);
-        }
-    }
-
     tlb_flush(env, 1);
-    kvm_load_mpstate(env);
-
     return 0;
 }
 
-const VMStateDescription vmstate_cpu = {
+static const VMStateDescription vmstate_cpu = {
     .name = "cpu",
     .version_id = CPU_SAVE_VERSION,
     .minimum_version_id = 3,
     .minimum_version_id_old = 3,
     .pre_save = cpu_pre_save,
-    .pre_load = cpu_pre_load,
     .post_load = cpu_post_load,
     .fields      = (VMStateField []) {
         VMSTATE_UINTTL_ARRAY(regs, CPUState, CPU_NB_REGS),
@@ -469,9 +450,15 @@ const VMStateDescription vmstate_cpu = {
         VMSTATE_UINT64_V(mtrr_deftype, CPUState, 8),
         VMSTATE_MTRR_VARS(mtrr_var, CPUState, 8, 8),
         /* KVM-related states */
-        VMSTATE_INT32_V(pending_irq_vmstate, CPUState, 9),
+        VMSTATE_INT32_V(interrupt_injected, CPUState, 9),
         VMSTATE_UINT32_V(mp_state, CPUState, 9),
         VMSTATE_UINT64_V(tsc, CPUState, 9),
+        VMSTATE_INT32_V(exception_injected, CPUState, 11),
+        VMSTATE_UINT8_V(soft_interrupt, CPUState, 11),
+        VMSTATE_UINT8_V(nmi_injected, CPUState, 11),
+        VMSTATE_UINT8_V(nmi_pending, CPUState, 11),
+        VMSTATE_UINT8_V(has_error_code, CPUState, 11),
+        VMSTATE_UINT32_V(sipi_vector, CPUState, 11),
         /* MCE */
         VMSTATE_UINT64_V(mcg_cap, CPUState, 10),
         VMSTATE_UINT64_V(mcg_status, CPUState, 10),
@@ -479,7 +466,16 @@ const VMStateDescription vmstate_cpu = {
         VMSTATE_UINT64_ARRAY_V(mce_banks, CPUState, MCE_BANKS_DEF *4, 10),
         /* rdtscp */
         VMSTATE_UINT64_V(tsc_aux, CPUState, 11),
+        /* KVM pvclock msr */
+        VMSTATE_UINT64_V(system_time_msr, CPUState, 11),
+        VMSTATE_UINT64_V(wall_clock_msr, CPUState, 11),
+
+        /* XSAVE related fields */
+        VMSTATE_UINT64_V(xcr0, CPUState, 12),
+        VMSTATE_UINT64_V(xstate_bv, CPUState, 12),
+        VMSTATE_YMMH_REGS_VARS(ymmh_regs, CPUState, CPU_NB_REGS, 12),
         VMSTATE_END_OF_LIST()
+        /* The above list is not sorted /wrt version numbers, watch out! */
     }
 };
 

@@ -63,8 +63,7 @@ static TCGv env_iflags;
 /* This is the state at translation time.  */
 typedef struct DisasContext {
     CPUState *env;
-    target_ulong pc, ppc;
-    target_ulong cache_pc;
+    target_ulong pc;
 
     /* Decoder.  */
     int type_b;
@@ -151,6 +150,14 @@ static void gen_goto_tb(DisasContext *dc, int n, target_ulong dest)
         tcg_gen_movi_tl(cpu_SR[SR_PC], dest);
         tcg_gen_exit_tb(0);
     }
+}
+
+/* True if ALU operand b is a small immediate that may deserve
+   faster treatment.  */
+static inline int dec_alu_op_b_is_small_imm(DisasContext *dc)
+{
+    /* Immediate insn without the imm prefix ?  */
+    return dc->type_b && !(dc->tb_flags & IMM_FLAG);
 }
 
 static inline TCGv *dec_alu_op_b(DisasContext *dc)
@@ -713,6 +720,9 @@ static void dec_bit(DisasContext *dc)
             tcg_gen_ext16s_i32(cpu_R[dc->rd], cpu_R[dc->ra]);
             break;
         case 0x64:
+        case 0x66:
+        case 0x74:
+        case 0x76:
             /* wdc.  */
             LOG_DIS("wdc r%d\n", dc->ra);
             if ((dc->tb_flags & MSR_EE_FLAG)
@@ -777,6 +787,13 @@ static inline TCGv *compute_ldst_addr(DisasContext *dc, TCGv *t)
 
     /* Treat the fast cases first.  */
     if (!dc->type_b) {
+        /* If any of the regs is r0, return a ptr to the other.  */
+        if (dc->ra == 0) {
+            return &cpu_R[dc->rb];
+        } else if (dc->rb == 0) {
+            return &cpu_R[dc->ra];
+        }
+
         *t = tcg_temp_new();
         tcg_gen_add_tl(*t, cpu_R[dc->ra], cpu_R[dc->rb]);
         return t;
@@ -901,50 +918,24 @@ static void dec_store(DisasContext *dc)
 static inline void eval_cc(DisasContext *dc, unsigned int cc,
                            TCGv d, TCGv a, TCGv b)
 {
-    int l1;
-
     switch (cc) {
         case CC_EQ:
-            l1 = gen_new_label();
-            tcg_gen_movi_tl(env_btaken, 1);
-            tcg_gen_brcond_tl(TCG_COND_EQ, a, b, l1);
-            tcg_gen_movi_tl(env_btaken, 0);
-            gen_set_label(l1);
+            tcg_gen_setcond_tl(TCG_COND_EQ, d, a, b);
             break;
         case CC_NE:
-            l1 = gen_new_label();
-            tcg_gen_movi_tl(env_btaken, 1);
-            tcg_gen_brcond_tl(TCG_COND_NE, a, b, l1);
-            tcg_gen_movi_tl(env_btaken, 0);
-            gen_set_label(l1);
+            tcg_gen_setcond_tl(TCG_COND_NE, d, a, b);
             break;
         case CC_LT:
-            l1 = gen_new_label();
-            tcg_gen_movi_tl(env_btaken, 1);
-            tcg_gen_brcond_tl(TCG_COND_LT, a, b, l1);
-            tcg_gen_movi_tl(env_btaken, 0);
-            gen_set_label(l1);
+            tcg_gen_setcond_tl(TCG_COND_LT, d, a, b);
             break;
         case CC_LE:
-            l1 = gen_new_label();
-            tcg_gen_movi_tl(env_btaken, 1);
-            tcg_gen_brcond_tl(TCG_COND_LE, a, b, l1);
-            tcg_gen_movi_tl(env_btaken, 0);
-            gen_set_label(l1);
+            tcg_gen_setcond_tl(TCG_COND_LE, d, a, b);
             break;
         case CC_GE:
-            l1 = gen_new_label();
-            tcg_gen_movi_tl(env_btaken, 1);
-            tcg_gen_brcond_tl(TCG_COND_GE, a, b, l1);
-            tcg_gen_movi_tl(env_btaken, 0);
-            gen_set_label(l1);
+            tcg_gen_setcond_tl(TCG_COND_GE, d, a, b);
             break;
         case CC_GT:
-            l1 = gen_new_label();
-            tcg_gen_movi_tl(env_btaken, 1);
-            tcg_gen_brcond_tl(TCG_COND_GT, a, b, l1);
-            tcg_gen_movi_tl(env_btaken, 0);
-            gen_set_label(l1);
+            tcg_gen_setcond_tl(TCG_COND_GT, d, a, b);
             break;
         default:
             cpu_abort(dc->env, "Unknown condition code %x.\n", cc);
@@ -981,15 +972,22 @@ static void dec_bcc(DisasContext *dc)
                       cpu_env, offsetof(CPUState, bimm));
     }
 
-    tcg_gen_movi_tl(env_btarget, dc->pc);
-    tcg_gen_add_tl(env_btarget, env_btarget, *(dec_alu_op_b(dc)));
-    eval_cc(dc, cc, env_btaken, cpu_R[dc->ra], tcg_const_tl(0));
+    if (dec_alu_op_b_is_small_imm(dc)) {
+        int32_t offset = (int32_t)((int16_t)dc->imm); /* sign-extend.  */
+
+        tcg_gen_movi_tl(env_btarget, dc->pc + offset);
+    } else {
+        tcg_gen_movi_tl(env_btarget, dc->pc);
+        tcg_gen_add_tl(env_btarget, env_btarget, *(dec_alu_op_b(dc)));
+    }
     dc->jmp = JMP_INDIRECT;
+    eval_cc(dc, cc, env_btaken, cpu_R[dc->ra], tcg_const_tl(0));
 }
 
 static void dec_br(DisasContext *dc)
 {
     unsigned int dslot, link, abs;
+    int mem_index = cpu_mmu_index(dc->env);
 
     dslot = dc->ir & (1 << 20);
     abs = dc->ir & (1 << 19);
@@ -1013,19 +1011,27 @@ static void dec_br(DisasContext *dc)
     if (abs) {
         tcg_gen_movi_tl(env_btaken, 1);
         tcg_gen_mov_tl(env_btarget, *(dec_alu_op_b(dc)));
-        if (link && !(dc->tb_flags & IMM_FLAG)
-            && (dc->imm == 8 || dc->imm == 0x18))
-            t_gen_raise_exception(dc, EXCP_BREAK);
-        if (dc->imm == 0)
-            t_gen_raise_exception(dc, EXCP_DEBUG);
+        if (link && !dslot) {
+            if (!(dc->tb_flags & IMM_FLAG) && (dc->imm == 8 || dc->imm == 0x18))
+                t_gen_raise_exception(dc, EXCP_BREAK);
+            if (dc->imm == 0) {
+                if ((dc->tb_flags & MSR_EE_FLAG) && mem_index == MMU_USER_IDX) {
+                    tcg_gen_movi_tl(cpu_SR[SR_ESR], ESR_EC_PRIVINSN);
+                    t_gen_raise_exception(dc, EXCP_HW_EXCP);
+                    return;
+                }
+
+                t_gen_raise_exception(dc, EXCP_DEBUG);
+            }
+        }
     } else {
-        if (dc->tb_flags & IMM_FLAG) {
+        if (dec_alu_op_b_is_small_imm(dc)) {
+            dc->jmp = JMP_DIRECT;
+            dc->jmp_pc = dc->pc + (int32_t)((int16_t)dc->imm);
+        } else {
             tcg_gen_movi_tl(env_btaken, 1);
             tcg_gen_movi_tl(env_btarget, dc->pc);
             tcg_gen_add_tl(env_btarget, env_btarget, *(dec_alu_op_b(dc)));
-        } else {
-            dc->jmp = JMP_DIRECT;
-            dc->jmp_pc = dc->pc + (int32_t)((int16_t)dc->imm);
         }
     }
 }
@@ -1267,9 +1273,7 @@ gen_intermediate_code_internal(CPUState *env, TranslationBlock *tb,
     dc->is_jmp = DISAS_NEXT;
     dc->jmp = 0;
     dc->delayed_branch = !!(dc->tb_flags & D_FLAG);
-    dc->ppc = pc_start;
     dc->pc = pc_start;
-    dc->cache_pc = -1;
     dc->singlestep_enabled = env->singlestep_enabled;
     dc->cpustate_changed = 0;
     dc->abort_at_next_insn = 0;
@@ -1325,7 +1329,6 @@ gen_intermediate_code_internal(CPUState *env, TranslationBlock *tb,
 	decode(dc);
         if (dc->clear_imm)
             dc->tb_flags &= ~IMM_FLAG;
-        dc->ppc = dc->pc;
         dc->pc += 4;
         num_insns++;
 
@@ -1445,13 +1448,16 @@ void cpu_dump_state (CPUState *env, FILE *f,
 
     cpu_fprintf(f, "IN: PC=%x %s\n",
                 env->sregs[SR_PC], lookup_symbol(env->sregs[SR_PC]));
-    cpu_fprintf(f, "rmsr=%x resr=%x debug[%x] imm=%x iflags=%x\n",
-             env->sregs[SR_MSR], env->sregs[SR_ESR],
+    cpu_fprintf(f, "rmsr=%x resr=%x rear=%x debug[%x] imm=%x iflags=%x\n",
+             env->sregs[SR_MSR], env->sregs[SR_ESR], env->sregs[SR_EAR],
              env->debug, env->imm, env->iflags);
-    cpu_fprintf(f, "btaken=%d btarget=%x mode=%s(saved=%s)\n",
+    cpu_fprintf(f, "btaken=%d btarget=%x mode=%s(saved=%s) eip=%d ie=%d\n",
              env->btaken, env->btarget,
              (env->sregs[SR_MSR] & MSR_UM) ? "user" : "kernel",
-             (env->sregs[SR_MSR] & MSR_UMS) ? "user" : "kernel");
+             (env->sregs[SR_MSR] & MSR_UMS) ? "user" : "kernel",
+             (env->sregs[SR_MSR] & MSR_EIP),
+             (env->sregs[SR_MSR] & MSR_IE));
+
     for (i = 0; i < 32; i++) {
         cpu_fprintf(f, "r%2.2d=%8.8x ", i, env->regs[i]);
         if ((i + 1) % 4 == 0)
@@ -1471,33 +1477,6 @@ CPUState *cpu_mb_init (const char *cpu_model)
     cpu_exec_init(env);
     cpu_reset(env);
 
-    env->pvr.regs[0] = PVR0_PVR_FULL_MASK \
-                       | PVR0_USE_BARREL_MASK \
-                       | PVR0_USE_DIV_MASK \
-                       | PVR0_USE_HW_MUL_MASK \
-                       | PVR0_USE_EXC_MASK \
-                       | PVR0_USE_ICACHE_MASK \
-                       | PVR0_USE_DCACHE_MASK \
-                       | PVR0_USE_MMU \
-                       | (0xb << 8);
-    env->pvr.regs[2] = PVR2_D_OPB_MASK \
-                        | PVR2_D_LMB_MASK \
-                        | PVR2_I_OPB_MASK \
-                        | PVR2_I_LMB_MASK \
-                        | PVR2_USE_MSR_INSTR \
-                        | PVR2_USE_PCMP_INSTR \
-                        | PVR2_USE_BARREL_MASK \
-                        | PVR2_USE_DIV_MASK \
-                        | PVR2_USE_HW_MUL_MASK \
-                        | PVR2_USE_MUL64_MASK \
-                        | 0;
-    env->pvr.regs[10] = 0x0c000000; /* Default to spartan 3a dsp family.  */
-    env->pvr.regs[11] = PVR11_USE_MMU | (16 << 17);
-#if !defined(CONFIG_USER_ONLY)
-    env->mmu.c_mmu = 3;
-    env->mmu.c_mmu_tlb_access = 3;
-    env->mmu.c_mmu_zones = 16;
-#endif
 
     if (tcg_initialized)
         return env;
@@ -1547,12 +1526,38 @@ void cpu_reset (CPUState *env)
     memset(env, 0, offsetof(CPUMBState, breakpoints));
     tlb_flush(env, 1);
 
+    env->pvr.regs[0] = PVR0_PVR_FULL_MASK \
+                       | PVR0_USE_BARREL_MASK \
+                       | PVR0_USE_DIV_MASK \
+                       | PVR0_USE_HW_MUL_MASK \
+                       | PVR0_USE_EXC_MASK \
+                       | PVR0_USE_ICACHE_MASK \
+                       | PVR0_USE_DCACHE_MASK \
+                       | PVR0_USE_MMU \
+                       | (0xb << 8);
+    env->pvr.regs[2] = PVR2_D_OPB_MASK \
+                        | PVR2_D_LMB_MASK \
+                        | PVR2_I_OPB_MASK \
+                        | PVR2_I_LMB_MASK \
+                        | PVR2_USE_MSR_INSTR \
+                        | PVR2_USE_PCMP_INSTR \
+                        | PVR2_USE_BARREL_MASK \
+                        | PVR2_USE_DIV_MASK \
+                        | PVR2_USE_HW_MUL_MASK \
+                        | PVR2_USE_MUL64_MASK \
+                        | 0;
+    env->pvr.regs[10] = 0x0c000000; /* Default to spartan 3a dsp family.  */
+    env->pvr.regs[11] = PVR11_USE_MMU | (16 << 17);
+
     env->sregs[SR_MSR] = 0;
 #if defined(CONFIG_USER_ONLY)
     /* start in user mode with interrupts enabled.  */
     env->pvr.regs[10] = 0x0c000000; /* Spartan 3a dsp.  */
 #else
     mmu_init(&env->mmu);
+    env->mmu.c_mmu = 3;
+    env->mmu.c_mmu_tlb_access = 3;
+    env->mmu.c_mmu_zones = 16;
 #endif
 }
 

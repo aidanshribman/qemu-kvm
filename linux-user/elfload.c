@@ -97,6 +97,16 @@ enum {
 #define ELIBBAD 80
 #endif
 
+typedef target_ulong	target_elf_greg_t;
+#ifdef USE_UID16
+typedef uint16_t	target_uid_t;
+typedef uint16_t	target_gid_t;
+#else
+typedef uint32_t	target_uid_t;
+typedef uint32_t	target_gid_t;
+#endif
+typedef int32_t		target_pid_t;
+
 #ifdef TARGET_I386
 
 #define ELF_PLATFORM get_elf_platform()
@@ -133,11 +143,6 @@ static inline void init_thread(struct target_pt_regs *regs, struct image_info *i
     regs->rsp = infop->start_stack;
     regs->rip = infop->entry;
 }
-
-typedef target_ulong    target_elf_greg_t;
-typedef uint32_t        target_uid_t;
-typedef uint32_t        target_gid_t;
-typedef int32_t         target_pid_t;
 
 #define ELF_NREG    27
 typedef target_elf_greg_t  target_elf_gregset_t[ELF_NREG];
@@ -211,11 +216,6 @@ static inline void init_thread(struct target_pt_regs *regs, struct image_info *i
     regs->edx = 0;
 }
 
-typedef target_ulong    target_elf_greg_t;
-typedef uint16_t        target_uid_t;
-typedef uint16_t        target_gid_t;
-typedef int32_t         target_pid_t;
-
 #define ELF_NREG    17
 typedef target_elf_greg_t  target_elf_gregset_t[ELF_NREG];
 
@@ -286,35 +286,30 @@ static inline void init_thread(struct target_pt_regs *regs, struct image_info *i
     regs->ARM_r10 = infop->start_data;
 }
 
-typedef uint32_t target_elf_greg_t;
-typedef uint16_t target_uid_t;
-typedef uint16_t target_gid_t;
-typedef int32_t  target_pid_t;
-
 #define ELF_NREG    18
 typedef target_elf_greg_t  target_elf_gregset_t[ELF_NREG];
 
 static void elf_core_copy_regs(target_elf_gregset_t *regs, const CPUState *env)
 {
-    (*regs)[0] = env->regs[0];
-    (*regs)[1] = env->regs[1];
-    (*regs)[2] = env->regs[2];
-    (*regs)[3] = env->regs[3];
-    (*regs)[4] = env->regs[4];
-    (*regs)[5] = env->regs[5];
-    (*regs)[6] = env->regs[6];
-    (*regs)[7] = env->regs[7];
-    (*regs)[8] = env->regs[8];
-    (*regs)[9] = env->regs[9];
-    (*regs)[10] = env->regs[10];
-    (*regs)[11] = env->regs[11];
-    (*regs)[12] = env->regs[12];
-    (*regs)[13] = env->regs[13];
-    (*regs)[14] = env->regs[14];
-    (*regs)[15] = env->regs[15];
+    (*regs)[0] = tswapl(env->regs[0]);
+    (*regs)[1] = tswapl(env->regs[1]);
+    (*regs)[2] = tswapl(env->regs[2]);
+    (*regs)[3] = tswapl(env->regs[3]);
+    (*regs)[4] = tswapl(env->regs[4]);
+    (*regs)[5] = tswapl(env->regs[5]);
+    (*regs)[6] = tswapl(env->regs[6]);
+    (*regs)[7] = tswapl(env->regs[7]);
+    (*regs)[8] = tswapl(env->regs[8]);
+    (*regs)[9] = tswapl(env->regs[9]);
+    (*regs)[10] = tswapl(env->regs[10]);
+    (*regs)[11] = tswapl(env->regs[11]);
+    (*regs)[12] = tswapl(env->regs[12]);
+    (*regs)[13] = tswapl(env->regs[13]);
+    (*regs)[14] = tswapl(env->regs[14]);
+    (*regs)[15] = tswapl(env->regs[15]);
 
-    (*regs)[16] = cpsr_read((CPUState *)env);
-    (*regs)[17] = env->regs[0]; /* XXX */
+    (*regs)[16] = tswapl(cpsr_read((CPUState *)env));
+    (*regs)[17] = tswapl(env->regs[0]); /* XXX */
 }
 
 #define USE_ELF_CORE_DUMP
@@ -330,11 +325,18 @@ enum
   ARM_HWCAP_ARM_FPA       = 1 << 5,
   ARM_HWCAP_ARM_VFP       = 1 << 6,
   ARM_HWCAP_ARM_EDSP      = 1 << 7,
+  ARM_HWCAP_ARM_JAVA      = 1 << 8,
+  ARM_HWCAP_ARM_IWMMXT    = 1 << 9,
+  ARM_HWCAP_ARM_THUMBEE   = 1 << 10,
+  ARM_HWCAP_ARM_NEON      = 1 << 11,
+  ARM_HWCAP_ARM_VFPv3     = 1 << 12,
+  ARM_HWCAP_ARM_VFPv3D16  = 1 << 13,
 };
 
 #define ELF_HWCAP (ARM_HWCAP_ARM_SWP | ARM_HWCAP_ARM_HALF              \
                     | ARM_HWCAP_ARM_THUMB | ARM_HWCAP_ARM_FAST_MULT     \
-                    | ARM_HWCAP_ARM_FPA | ARM_HWCAP_ARM_VFP)
+                    | ARM_HWCAP_ARM_FPA | ARM_HWCAP_ARM_VFP \
+                    | ARM_HWCAP_ARM_NEON | ARM_HWCAP_ARM_VFPv3 )
 
 #endif
 
@@ -510,33 +512,40 @@ do {                                                                    \
 
 static inline void init_thread(struct target_pt_regs *_regs, struct image_info *infop)
 {
-    abi_ulong pos = infop->start_stack;
-    abi_ulong tmp;
-#if defined(TARGET_PPC64) && !defined(TARGET_ABI32)
-    abi_ulong entry, toc;
-#endif
-
     _regs->gpr[1] = infop->start_stack;
 #if defined(TARGET_PPC64) && !defined(TARGET_ABI32)
-    entry = ldq_raw(infop->entry) + infop->load_addr;
-    toc = ldq_raw(infop->entry + 8) + infop->load_addr;
-    _regs->gpr[2] = toc;
-    infop->entry = entry;
+    _regs->gpr[2] = ldq_raw(infop->entry + 8) + infop->load_addr;
+    infop->entry = ldq_raw(infop->entry) + infop->load_addr;
 #endif
     _regs->nip = infop->entry;
-    /* Note that isn't exactly what regular kernel does
-     * but this is what the ABI wants and is needed to allow
-     * execution of PPC BSD programs.
-     */
-    /* FIXME - what to for failure of get_user()? */
-    get_user_ual(_regs->gpr[3], pos);
-    pos += sizeof(abi_ulong);
-    _regs->gpr[4] = pos;
-    for (tmp = 1; tmp != 0; pos += sizeof(abi_ulong))
-        tmp = ldl(pos);
-    _regs->gpr[5] = pos;
 }
 
+/* See linux kernel: arch/powerpc/include/asm/elf.h.  */
+#define ELF_NREG 48
+typedef target_elf_greg_t target_elf_gregset_t[ELF_NREG];
+
+static void elf_core_copy_regs(target_elf_gregset_t *regs, const CPUState *env)
+{
+    int i;
+    target_ulong ccr = 0;
+
+    for (i = 0; i < ARRAY_SIZE(env->gpr); i++) {
+        (*regs)[i] = tswapl(env->gpr[i]);
+    }
+
+    (*regs)[32] = tswapl(env->nip);
+    (*regs)[33] = tswapl(env->msr);
+    (*regs)[35] = tswapl(env->ctr);
+    (*regs)[36] = tswapl(env->lr);
+    (*regs)[37] = tswapl(env->xer);
+
+    for (i = 0; i < ARRAY_SIZE(env->crf); i++) {
+        ccr |= env->crf[i] << (32 - ((i + 1) * 4));
+    }
+    (*regs)[38] = tswapl(ccr);
+}
+
+#define USE_ELF_CORE_DUMP
 #define ELF_EXEC_PAGESIZE	4096
 
 #endif
@@ -566,6 +575,52 @@ static inline void init_thread(struct target_pt_regs *regs, struct image_info *i
     regs->regs[29] = infop->start_stack;
 }
 
+/* See linux kernel: arch/mips/include/asm/elf.h.  */
+#define ELF_NREG 45
+typedef target_elf_greg_t target_elf_gregset_t[ELF_NREG];
+
+/* See linux kernel: arch/mips/include/asm/reg.h.  */
+enum {
+#ifdef TARGET_MIPS64
+    TARGET_EF_R0 = 0,
+#else
+    TARGET_EF_R0 = 6,
+#endif
+    TARGET_EF_R26 = TARGET_EF_R0 + 26,
+    TARGET_EF_R27 = TARGET_EF_R0 + 27,
+    TARGET_EF_LO = TARGET_EF_R0 + 32,
+    TARGET_EF_HI = TARGET_EF_R0 + 33,
+    TARGET_EF_CP0_EPC = TARGET_EF_R0 + 34,
+    TARGET_EF_CP0_BADVADDR = TARGET_EF_R0 + 35,
+    TARGET_EF_CP0_STATUS = TARGET_EF_R0 + 36,
+    TARGET_EF_CP0_CAUSE = TARGET_EF_R0 + 37
+};
+
+/* See linux kernel: arch/mips/kernel/process.c:elf_dump_regs.  */
+static void elf_core_copy_regs(target_elf_gregset_t *regs, const CPUState *env)
+{
+    int i;
+
+    for (i = 0; i < TARGET_EF_R0; i++) {
+        (*regs)[i] = 0;
+    }
+    (*regs)[TARGET_EF_R0] = 0;
+
+    for (i = 1; i < ARRAY_SIZE(env->active_tc.gpr); i++) {
+        (*regs)[TARGET_EF_R0 + i] = tswapl(env->active_tc.gpr[i]);
+    }
+
+    (*regs)[TARGET_EF_R26] = 0;
+    (*regs)[TARGET_EF_R27] = 0;
+    (*regs)[TARGET_EF_LO] = tswapl(env->active_tc.LO[0]);
+    (*regs)[TARGET_EF_HI] = tswapl(env->active_tc.HI[0]);
+    (*regs)[TARGET_EF_CP0_EPC] = tswapl(env->active_tc.PC);
+    (*regs)[TARGET_EF_CP0_BADVADDR] = tswapl(env->CP0_BadVAddr);
+    (*regs)[TARGET_EF_CP0_STATUS] = tswapl(env->CP0_Status);
+    (*regs)[TARGET_EF_CP0_CAUSE] = tswapl(env->CP0_Cause);
+}
+
+#define USE_ELF_CORE_DUMP
 #define ELF_EXEC_PAGESIZE        4096
 
 #endif /* TARGET_MIPS */
@@ -574,11 +629,11 @@ static inline void init_thread(struct target_pt_regs *regs, struct image_info *i
 
 #define ELF_START_MMAP 0x80000000
 
-#define elf_check_arch(x) ( (x) == EM_XILINX_MICROBLAZE )
+#define elf_check_arch(x) ( (x) == EM_MICROBLAZE || (x) == EM_MICROBLAZE_OLD)
 
 #define ELF_CLASS   ELFCLASS32
 #define ELF_DATA	ELFDATA2MSB
-#define ELF_ARCH    EM_MIPS
+#define ELF_ARCH    EM_MICROBLAZE
 
 static inline void init_thread(struct target_pt_regs *regs, struct image_info *infop)
 {
@@ -588,6 +643,24 @@ static inline void init_thread(struct target_pt_regs *regs, struct image_info *i
 }
 
 #define ELF_EXEC_PAGESIZE        4096
+
+#define USE_ELF_CORE_DUMP
+#define ELF_NREG 38
+typedef target_elf_greg_t target_elf_gregset_t[ELF_NREG];
+
+/* See linux kernel: arch/mips/kernel/process.c:elf_dump_regs.  */
+static void elf_core_copy_regs(target_elf_gregset_t *regs, const CPUState *env)
+{
+    int i, pos = 0;
+
+    for (i = 0; i < 32; i++) {
+        (*regs)[pos++] = tswapl(env->regs[i]);
+    }
+
+    for (i = 0; i < 6; i++) {
+        (*regs)[pos++] = tswapl(env->sregs[i]);
+    }
+}
 
 #endif /* TARGET_MICROBLAZE */
 
@@ -608,6 +681,39 @@ static inline void init_thread(struct target_pt_regs *regs, struct image_info *i
   regs->regs[15] = infop->start_stack;
 }
 
+/* See linux kernel: arch/sh/include/asm/elf.h.  */
+#define ELF_NREG 23
+typedef target_elf_greg_t target_elf_gregset_t[ELF_NREG];
+
+/* See linux kernel: arch/sh/include/asm/ptrace.h.  */
+enum {
+    TARGET_REG_PC = 16,
+    TARGET_REG_PR = 17,
+    TARGET_REG_SR = 18,
+    TARGET_REG_GBR = 19,
+    TARGET_REG_MACH = 20,
+    TARGET_REG_MACL = 21,
+    TARGET_REG_SYSCALL = 22
+};
+
+static inline void elf_core_copy_regs(target_elf_gregset_t *regs, const CPUState *env)
+{
+    int i;
+
+    for (i = 0; i < 16; i++) {
+        (*regs[i]) = tswapl(env->gregs[i]);
+    }
+
+    (*regs)[TARGET_REG_PC] = tswapl(env->pc);
+    (*regs)[TARGET_REG_PR] = tswapl(env->pr);
+    (*regs)[TARGET_REG_SR] = tswapl(env->sr);
+    (*regs)[TARGET_REG_GBR] = tswapl(env->gbr);
+    (*regs)[TARGET_REG_MACH] = tswapl(env->mach);
+    (*regs)[TARGET_REG_MACL] = tswapl(env->macl);
+    (*regs)[TARGET_REG_SYSCALL] = 0; /* FIXME */
+}
+
+#define USE_ELF_CORE_DUMP
 #define ELF_EXEC_PAGESIZE        4096
 
 #endif
@@ -651,6 +757,35 @@ static inline void init_thread(struct target_pt_regs *regs, struct image_info *i
     regs->pc = infop->entry;
 }
 
+/* See linux kernel: arch/m68k/include/asm/elf.h.  */
+#define ELF_NREG 20
+typedef target_elf_greg_t target_elf_gregset_t[ELF_NREG];
+
+static void elf_core_copy_regs(target_elf_gregset_t *regs, const CPUState *env)
+{
+    (*regs)[0] = tswapl(env->dregs[1]);
+    (*regs)[1] = tswapl(env->dregs[2]);
+    (*regs)[2] = tswapl(env->dregs[3]);
+    (*regs)[3] = tswapl(env->dregs[4]);
+    (*regs)[4] = tswapl(env->dregs[5]);
+    (*regs)[5] = tswapl(env->dregs[6]);
+    (*regs)[6] = tswapl(env->dregs[7]);
+    (*regs)[7] = tswapl(env->aregs[0]);
+    (*regs)[8] = tswapl(env->aregs[1]);
+    (*regs)[9] = tswapl(env->aregs[2]);
+    (*regs)[10] = tswapl(env->aregs[3]);
+    (*regs)[11] = tswapl(env->aregs[4]);
+    (*regs)[12] = tswapl(env->aregs[5]);
+    (*regs)[13] = tswapl(env->aregs[6]);
+    (*regs)[14] = tswapl(env->dregs[0]);
+    (*regs)[15] = tswapl(env->aregs[7]);
+    (*regs)[16] = tswapl(env->dregs[0]); /* FIXME: orig_d0 */
+    (*regs)[17] = tswapl(env->sr);
+    (*regs)[18] = tswapl(env->pc);
+    (*regs)[19] = 0;  /* FIXME: regs->format | regs->vector */
+}
+
+#define USE_ELF_CORE_DUMP
 #define ELF_EXEC_PAGESIZE	8192
 
 #endif
@@ -670,9 +805,6 @@ static inline void init_thread(struct target_pt_regs *regs, struct image_info *i
     regs->pc = infop->entry;
     regs->ps = 8;
     regs->usp = infop->start_stack;
-    regs->unique = infop->start_data; /* ? */
-    printf("Set unique value to " TARGET_FMT_lx " (" TARGET_FMT_lx ")\n",
-           regs->unique, infop->start_data);
 }
 
 #define ELF_EXEC_PAGESIZE        8192
@@ -871,7 +1003,7 @@ static abi_ulong setup_arg_pages(abi_ulong p, struct linux_binprm *bprm,
     /* Create enough stack to hold everything.  If we don't use
      * it for args, we'll use it for something else...
      */
-    size = x86_stack_size;
+    size = guest_stack_size;
     if (size < MAX_ARG_PAGES*TARGET_PAGE_SIZE)
         size = MAX_ARG_PAGES*TARGET_PAGE_SIZE;
     error = target_mmap(0,
@@ -886,6 +1018,7 @@ static abi_ulong setup_arg_pages(abi_ulong p, struct linux_binprm *bprm,
     /* we reserve one extra page at the top of the stack as guard */
     target_mprotect(error + size, qemu_host_page_size, PROT_NONE);
 
+    info->stack_limit = error;
     stack_base = error + size - MAX_ARG_PAGES*TARGET_PAGE_SIZE;
     p += stack_base;
 
@@ -1315,10 +1448,10 @@ static void load_symbols(struct elfhdr *hdr, int fd)
     s->disas_num_syms = nsyms;
 #if ELF_CLASS == ELFCLASS32
     s->disas_symtab.elf32 = syms;
-    s->lookup_symbol = (lookup_symbol_t)lookup_symbolxx;
+    s->lookup_symbol = lookup_symbolxx;
 #else
     s->disas_symtab.elf64 = syms;
-    s->lookup_symbol = (lookup_symbol_t)lookup_symbolxx;
+    s->lookup_symbol = lookup_symbolxx;
 #endif
     s->next = syminfos;
     syminfos = s;
@@ -1550,21 +1683,82 @@ int load_elf_binary(struct linux_binprm * bprm, struct target_pt_regs * regs,
      * In case where user has not explicitly set the guest_base, we
      * probe here that should we set it automatically.
      */
-    if (!have_guest_base) {
+    if (!(have_guest_base || reserved_va)) {
         /*
-         * Go through ELF program header table and find out whether
-	 * any of the segments drop below our current mmap_min_addr and
-         * in that case set guest_base to corresponding address.
-         */
+         * Go through ELF program header table and find the address
+         * range used by loadable segments.  Check that this is available on
+         * the host, and if not find a suitable value for guest_base.  */
+        abi_ulong app_start = ~0;
+        abi_ulong app_end = 0;
+        abi_ulong addr;
+        unsigned long host_start;
+        unsigned long real_start;
+        unsigned long host_size;
         for (i = 0, elf_ppnt = elf_phdata; i < elf_ex.e_phnum;
             i++, elf_ppnt++) {
             if (elf_ppnt->p_type != PT_LOAD)
                 continue;
-            if (HOST_PAGE_ALIGN(elf_ppnt->p_vaddr) < mmap_min_addr) {
-                guest_base = HOST_PAGE_ALIGN(mmap_min_addr);
-                break;
+            addr = elf_ppnt->p_vaddr;
+            if (addr < app_start) {
+                app_start = addr;
+            }
+            addr += elf_ppnt->p_memsz;
+            if (addr > app_end) {
+                app_end = addr;
             }
         }
+
+        /* If we don't have any loadable segments then something
+           is very wrong.  */
+        assert(app_start < app_end);
+
+        /* Round addresses to page boundaries.  */
+        app_start = app_start & qemu_host_page_mask;
+        app_end = HOST_PAGE_ALIGN(app_end);
+        if (app_start < mmap_min_addr) {
+            host_start = HOST_PAGE_ALIGN(mmap_min_addr);
+        } else {
+            host_start = app_start;
+            if (host_start != app_start) {
+                fprintf(stderr, "qemu: Address overflow loading ELF binary\n");
+                abort();
+            }
+        }
+        host_size = app_end - app_start;
+        while (1) {
+            /* Do not use mmap_find_vma here because that is limited to the
+               guest address space.  We are going to make the
+               guest address space fit whatever we're given.  */
+            real_start = (unsigned long)mmap((void *)host_start, host_size,
+                PROT_NONE, MAP_ANONYMOUS | MAP_PRIVATE | MAP_NORESERVE, -1, 0);
+            if (real_start == (unsigned long)-1) {
+                fprintf(stderr, "qemu: Virtual memory exausted\n");
+                abort();
+            }
+            if (real_start == host_start) {
+                break;
+            }
+            /* That address didn't work.  Unmap and try a different one.
+               The address the host picked because is typically
+               right at the top of the host address space and leaves the
+               guest with no usable address space.  Resort to a linear search.
+               We already compensated for mmap_min_addr, so this should not
+               happen often.  Probably means we got unlucky and host address
+               space randomization put a shared library somewhere
+               inconvenient.  */
+            munmap((void *)real_start, host_size);
+            host_start += qemu_host_page_size;
+            if (host_start == app_start) {
+                /* Theoretically possible if host doesn't have any
+                   suitably aligned areas.  Normally the first mmap will
+                   fail.  */
+                fprintf(stderr, "qemu: Unable to find space for application\n");
+                abort();
+            }
+        }
+        qemu_log("Relocating guest address space from 0x" TARGET_ABI_FMT_lx
+                 " to 0x%lx\n", app_start, real_start);
+        guest_base = real_start - app_start;
     }
 #endif /* CONFIG_USE_GUEST_BASE */
 
@@ -1760,7 +1954,7 @@ int load_elf_binary(struct linux_binprm * bprm, struct target_pt_regs * regs,
  * Core dump code is copied from linux kernel (fs/binfmt_elf.c).
  *
  * Porting ELF coredump for target is (quite) simple process.  First you
- * define ELF_USE_CORE_DUMP in target ELF code (where init_thread() for
+ * define USE_ELF_CORE_DUMP in target ELF code (where init_thread() for
  * the target resides):
  *
  * #define USE_ELF_CORE_DUMP
@@ -1771,13 +1965,6 @@ int load_elf_binary(struct linux_binprm * bprm, struct target_pt_regs * regs,
  * typedef <target_regtype> target_elf_greg_t;
  * #define ELF_NREG <number of registers>
  * typedef taret_elf_greg_t target_elf_gregset_t[ELF_NREG];
- *
- * Then define following types to match target types.  Actual types can
- * be found from linux kernel (arch/<ARCH>/include/asm/posix_types.h):
- *
- * typedef <target_uid_type> target_uid_t;
- * typedef <target_gid_type> target_gid_t;
- * typedef <target_pid_type> target_pid_t;
  *
  * Last step is to implement target specific function that copies registers
  * from given cpu into just specified register set.  Prototype is:
@@ -1894,7 +2081,7 @@ static int vma_get_mapping_count(const struct mm_struct *);
 static struct vm_area_struct *vma_first(const struct mm_struct *);
 static struct vm_area_struct *vma_next(struct vm_area_struct *);
 static abi_ulong vma_dump_size(const struct vm_area_struct *);
-static int vma_walker(void *priv, unsigned long start, unsigned long end,
+static int vma_walker(void *priv, abi_ulong start, abi_ulong end,
     unsigned long flags);
 
 static void fill_elf_header(struct elfhdr *, int, uint16_t, uint32_t);
@@ -2047,16 +2234,10 @@ static abi_ulong vma_dump_size(const struct vm_area_struct *vma)
     return (vma->vma_end - vma->vma_start);
 }
 
-static int vma_walker(void *priv, unsigned long start, unsigned long end,
+static int vma_walker(void *priv, abi_ulong start, abi_ulong end,
     unsigned long flags)
 {
     struct mm_struct *mm = (struct mm_struct *)priv;
-
-    /*
-     * Don't dump anything that qemu has reserved for internal use.
-     */
-    if (flags & PAGE_RESERVED)
-        return (0);
 
     vma_add_mapping(mm, start, end, flags);
     return (0);
@@ -2585,7 +2766,7 @@ static int elf_core_dump(int signr, const CPUState *env)
              */
             error = copy_from_user(page, addr, sizeof (page));
             if (error != 0) {
-                (void) fprintf(stderr, "unable to dump " TARGET_FMT_lx "\n",
+                (void) fprintf(stderr, "unable to dump " TARGET_ABI_FMT_lx "\n",
                     addr);
                 errno = -error;
                 goto out;

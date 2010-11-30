@@ -63,6 +63,7 @@
 
 #define PCI_VENDOR_ID_APPLE              0x106b
 #define PCI_DEVICE_ID_APPLE_UNI_N_AGP    0x0020
+#define PCI_DEVICE_ID_APPLE_U3_AGP       0x004b
 
 #define PCI_VENDOR_ID_SUN                0x108e
 #define PCI_DEVICE_ID_SUN_EBUS           0x1000
@@ -77,6 +78,14 @@
 
 #define PCI_VENDOR_ID_XILINX             0x10ee
 
+#define PCI_VENDOR_ID_VIA                0x1106
+#define PCI_DEVICE_ID_VIA_ISA_BRIDGE     0x0686
+#define PCI_DEVICE_ID_VIA_IDE            0x0571
+#define PCI_DEVICE_ID_VIA_UHCI           0x3038
+#define PCI_DEVICE_ID_VIA_ACPI           0x3057
+#define PCI_DEVICE_ID_VIA_AC97           0x3058
+#define PCI_DEVICE_ID_VIA_MC97           0x3068
+
 #define PCI_VENDOR_ID_MARVELL            0x11ab
 
 #define PCI_VENDOR_ID_ENSONIQ            0x1274
@@ -88,6 +97,7 @@
 #define PCI_VENDOR_ID_INTEL              0x8086
 #define PCI_DEVICE_ID_INTEL_82441        0x1237
 #define PCI_DEVICE_ID_INTEL_82801AA_5    0x2415
+#define PCI_DEVICE_ID_INTEL_ESB_9        0x25ab
 #define PCI_DEVICE_ID_INTEL_82371SB_0    0x7000
 #define PCI_DEVICE_ID_INTEL_82371SB_1    0x7010
 #define PCI_DEVICE_ID_INTEL_82371SB_2    0x7020

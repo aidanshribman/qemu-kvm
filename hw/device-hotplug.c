@@ -25,8 +25,6 @@
 #include "hw.h"
 #include "boards.h"
 #include "net.h"
-#include "block_int.h"
-#include "sysemu.h"
 
 DriveInfo *add_init_drive(const char *optstr)
 {
@@ -38,27 +36,11 @@ DriveInfo *add_init_drive(const char *optstr)
     if (!opts)
         return NULL;
 
-    dinfo = drive_init(opts, current_machine, &fatal_error);
+    dinfo = drive_init(opts, current_machine->use_scsi, &fatal_error);
     if (!dinfo) {
         qemu_opts_del(opts);
         return NULL;
     }
 
     return dinfo;
-}
-
-void destroy_nic(dev_match_fn *match_fn, void *arg)
-{
-    int i;
-    NICInfo *nic;
-
-    for (i = 0; i < MAX_NICS; i++) {
-        nic = &nd_table[i];
-        if (nic->used) {
-            if (nic->private && match_fn(nic->private, arg)) {
-                qemu_del_vlan_client(nic->vc);
-                net_client_uninit(nic);
-            }
-        }
-    }
 }

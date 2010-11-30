@@ -115,6 +115,9 @@ struct mixeng_volume nominal_volume = {
 #ifdef AUDIO_IS_FLAWLESS_AND_NO_CHECKS_ARE_REQURIED
 #error No its not
 #else
+static void audio_print_options (const char *prefix,
+                                 struct audio_option *opt);
+
 int audio_bug (const char *funcname, int cond)
 {
     if (cond) {
@@ -122,10 +125,16 @@ int audio_bug (const char *funcname, int cond)
 
         AUD_log (NULL, "A bug was just triggered in %s\n", funcname);
         if (!shown) {
+            struct audio_driver *d;
+
             shown = 1;
             AUD_log (NULL, "Save all your work and restart without audio\n");
             AUD_log (NULL, "Please send bug report to av1474@comtv.ru\n");
             AUD_log (NULL, "I am sorry\n");
+            d = glob_audio_state.drv;
+            if (d) {
+                audio_print_options (d->name, d->options);
+            }
         }
         AUD_log (NULL, "Context:\n");
 
@@ -321,10 +330,10 @@ void AUD_vlog (const char *cap, const char *fmt, va_list ap)
 {
     if (conf.log_to_monitor) {
         if (cap) {
-            monitor_printf(cur_mon, "%s: ", cap);
+            monitor_printf(default_mon, "%s: ", cap);
         }
 
-        monitor_vprintf(cur_mon, fmt, ap);
+        monitor_vprintf(default_mon, fmt, ap);
     }
     else {
         if (cap) {
@@ -1784,23 +1793,15 @@ static void audio_atexit (void)
     }
 }
 
-static void audio_save (QEMUFile *f, void *opaque)
-{
-    (void) f;
-    (void) opaque;
-}
-
-static int audio_load (QEMUFile *f, void *opaque, int version_id)
-{
-    (void) f;
-    (void) opaque;
-
-    if (version_id != 1) {
-        return -EINVAL;
+static const VMStateDescription vmstate_audio = {
+    .name = "audio",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .minimum_version_id_old = 1,
+    .fields      = (VMStateField []) {
+        VMSTATE_END_OF_LIST()
     }
-
-    return 0;
-}
+};
 
 static void audio_init (void)
 {
@@ -1900,7 +1901,7 @@ static void audio_init (void)
     }
 
     QLIST_INIT (&s->card_head);
-    register_savevm ("audio", 0, 1, audio_save, audio_load, s);
+    vmstate_register (NULL, 0, &vmstate_audio, s);
 }
 
 void AUD_register_card (const char *name, QEMUSoundCard *card)

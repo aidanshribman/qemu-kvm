@@ -9,6 +9,7 @@
 */
 #include "hw.h"
 #include "mips.h"
+#include "mips_cpudevs.h"
 #include "pc.h"
 #include "isa.h"
 #include "net.h"
@@ -20,10 +21,7 @@
 #include "ide.h"
 #include "loader.h"
 #include "elf.h"
-
-#define PHYS_TO_VIRT(x) ((x) | ~(target_ulong)0x7fffffff)
-
-#define VIRT_TO_PHYS_ADDEND (-((int64_t)(int32_t)0x80000000))
+#include "mc146818rtc.h"
 
 #define MAX_IDE_BUS 2
 
@@ -70,12 +68,17 @@ static CPUReadMemoryFunc * const mips_qemu_read[] = {
 
 static int mips_qemu_iomemtype = 0;
 
-static void load_kernel (CPUState *env)
+typedef struct ResetData {
+    CPUState *env;
+    uint64_t vector;
+} ResetData;
+
+static int64_t load_kernel(void)
 {
-    int64_t entry, kernel_low, kernel_high;
-    long kernel_size, initrd_size;
+    int64_t entry, kernel_high;
+    long kernel_size, initrd_size, params_size;
     ram_addr_t initrd_offset;
-    int ret;
+    uint32_t *params_buf;
     int big_endian;
 
 #ifdef TARGET_WORDS_BIGENDIAN
@@ -83,13 +86,13 @@ static void load_kernel (CPUState *env)
 #else
     big_endian = 0;
 #endif
-    kernel_size = load_elf(loaderparams.kernel_filename, VIRT_TO_PHYS_ADDEND,
-                           (uint64_t *)&entry, (uint64_t *)&kernel_low,
-                           (uint64_t *)&kernel_high, big_endian, ELF_MACHINE, 1);
+    kernel_size = load_elf(loaderparams.kernel_filename, cpu_mips_kseg0_to_phys,
+                           NULL, (uint64_t *)&entry, NULL,
+                           (uint64_t *)&kernel_high, big_endian,
+                           ELF_MACHINE, 1);
     if (kernel_size >= 0) {
         if ((entry & ~0x7fffffffULL) == 0x80000000)
             entry = (int32_t)entry;
-        env->active_tc.PC = entry;
     } else {
         fprintf(stderr, "qemu: could not load kernel '%s'\n",
                 loaderparams.kernel_filename);
@@ -121,29 +124,33 @@ static void load_kernel (CPUState *env)
     }
 
     /* Store command line.  */
-    if (initrd_size > 0) {
-        char buf[64];
-        ret = snprintf(buf, 64, "rd_start=0x" TARGET_FMT_lx " rd_size=%li ",
-                       PHYS_TO_VIRT((uint32_t)initrd_offset),
-                       initrd_size);
-        cpu_physical_memory_write((16 << 20) - 256, (void *)buf, 64);
-    } else {
-        ret = 0;
-    }
-    pstrcpy_targphys("cmdline", (16 << 20) - 256 + ret, 256,
-                     loaderparams.kernel_cmdline);
+    params_size = 264;
+    params_buf = qemu_malloc(params_size);
 
-    stl_phys((16 << 20) - 260, 0x12345678);
-    stl_phys((16 << 20) - 264, ram_size);
+    params_buf[0] = tswap32(ram_size);
+    params_buf[1] = tswap32(0x12345678);
+
+    if (initrd_size > 0) {
+        snprintf((char *)params_buf + 8, 256, "rd_start=0x%" PRIx64 " rd_size=%li %s",
+                 cpu_mips_phys_to_kseg0(NULL, initrd_offset),
+                 initrd_size, loaderparams.kernel_cmdline);
+    } else {
+        snprintf((char *)params_buf + 8, 256, "%s", loaderparams.kernel_cmdline);
+    }
+
+    rom_add_blob_fixed("params", params_buf, params_size,
+                       (16 << 20) - 264);
+
+    return entry;
 }
 
 static void main_cpu_reset(void *opaque)
 {
-    CPUState *env = opaque;
-    cpu_reset(env);
+    ResetData *s = (ResetData *)opaque;
+    CPUState *env = s->env;
 
-    if (loaderparams.kernel_filename)
-        load_kernel (env);
+    cpu_reset(env);
+    env->active_tc.PC = s->vector;
 }
 
 static const int sector_len = 32 * 1024;
@@ -158,11 +165,13 @@ void mips_r4k_init (ram_addr_t ram_size,
     ram_addr_t bios_offset;
     int bios_size;
     CPUState *env;
-    RTCState *rtc_state;
+    ResetData *reset_info;
+    ISADevice *rtc_state;
     int i;
     qemu_irq *i8259;
     DriveInfo *hd[MAX_IDE_BUS * MAX_IDE_DEVS];
     DriveInfo *dinfo;
+    int be;
 
     /* init CPUs */
     if (cpu_model == NULL) {
@@ -177,7 +186,10 @@ void mips_r4k_init (ram_addr_t ram_size,
         fprintf(stderr, "Unable to find CPU definition\n");
         exit(1);
     }
-    qemu_register_reset(main_cpu_reset, env);
+    reset_info = qemu_mallocz(sizeof(ResetData));
+    reset_info->env = env;
+    reset_info->vector = env->active_tc.PC;
+    qemu_register_reset(main_cpu_reset, reset_info);
 
     /* allocate RAM */
     if (ram_size > (256 << 20)) {
@@ -186,7 +198,7 @@ void mips_r4k_init (ram_addr_t ram_size,
                 ((unsigned int)ram_size / (1 << 20)));
         exit(1);
     }
-    ram_offset = qemu_ram_alloc(ram_size);
+    ram_offset = qemu_ram_alloc(NULL, "mips_r4k.ram", ram_size);
 
     cpu_register_physical_memory(0, ram_size, ram_offset | IO_MEM_RAM);
 
@@ -208,18 +220,24 @@ void mips_r4k_init (ram_addr_t ram_size,
     } else {
         bios_size = -1;
     }
+#ifdef TARGET_WORDS_BIGENDIAN
+    be = 1;
+#else
+    be = 0;
+#endif
     if ((bios_size > 0) && (bios_size <= BIOS_SIZE)) {
-        bios_offset = qemu_ram_alloc(BIOS_SIZE);
+        bios_offset = qemu_ram_alloc(NULL, "mips_r4k.bios", BIOS_SIZE);
 	cpu_register_physical_memory(0x1fc00000, BIOS_SIZE,
                                      bios_offset | IO_MEM_ROM);
 
         load_image_targphys(filename, 0x1fc00000, BIOS_SIZE);
     } else if ((dinfo = drive_get(IF_PFLASH, 0, 0)) != NULL) {
         uint32_t mips_rom = 0x00400000;
-        bios_offset = qemu_ram_alloc(mips_rom);
+        bios_offset = qemu_ram_alloc(NULL, "mips_r4k.bios", mips_rom);
         if (!pflash_cfi01_register(0x1fc00000, bios_offset,
-            dinfo->bdrv, sector_len, mips_rom / sector_len,
-            4, 0, 0, 0, 0)) {
+                                   dinfo->bdrv, sector_len,
+                                   mips_rom / sector_len,
+                                   4, 0, 0, 0, 0, be)) {
             fprintf(stderr, "qemu: Error registering flash memory.\n");
 	}
     }
@@ -237,7 +255,7 @@ void mips_r4k_init (ram_addr_t ram_size,
         loaderparams.kernel_filename = kernel_filename;
         loaderparams.kernel_cmdline = kernel_cmdline;
         loaderparams.initrd_filename = initrd_filename;
-        load_kernel (env);
+        reset_info->vector = load_kernel();
     }
 
     /* Init CPU internal devices */
@@ -249,10 +267,14 @@ void mips_r4k_init (ram_addr_t ram_size,
     isa_bus_new(NULL);
     isa_bus_irqs(i8259);
 
-    rtc_state = rtc_init(2000);
+    rtc_state = rtc_init(2000, NULL);
 
     /* Register 64 KB of ISA IO space at 0x14000000 */
-    isa_mmio_init(0x14000000, 0x00010000);
+#ifdef TARGET_WORDS_BIGENDIAN
+    isa_mmio_init(0x14000000, 0x00010000, 1);
+#else
+    isa_mmio_init(0x14000000, 0x00010000, 0);
+#endif
     isa_mem_base = 0x10000000;
 
     pit = pit_init(0x40, i8259[0]);
