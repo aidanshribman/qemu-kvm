@@ -1113,6 +1113,7 @@ void vm_state_notify(int running, int reason)
 
 void vm_start(void)
 {
+    dump_ram();
     if (!vm_running) {
         cpu_enable_ticks();
         vm_running = 1;

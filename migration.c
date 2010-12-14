@@ -31,6 +31,12 @@
     do { } while (0)
 #endif
 
+int is_migrate_xbrle = 0;
+
+uint32_t migrate_cache_size = 0;
+
+static int is_migrate_warmup = 0;
+
 /* Migration speed throttling */
 static uint32_t max_throttle = (32 << 20);
 
@@ -81,6 +87,11 @@ int do_migrate(Monitor *mon, const QDict *qdict, QObject **ret_data)
     int blk = qdict_get_try_bool(qdict, "blk", 0);
     int inc = qdict_get_try_bool(qdict, "inc", 0);
     const char *uri = qdict_get_str(qdict, "uri");
+    is_migrate_xbrle = qdict_get_try_bool(qdict, "xbrle", 0);
+    is_migrate_warmup = qdict_get_try_bool(qdict, "warmup", 0);
+
+    if (is_migrate_warmup)
+        detach = 1; /* as we need migrate_end to complte */
 
     if (current_migration &&
         current_migration->get_status(current_migration) == MIG_STATE_ACTIVE) {
@@ -361,6 +372,9 @@ void migrate_fd_put_ready(void *opaque)
     }
 
     DPRINTF("iterate\n");
+    if (is_migrate_warmup)
+            qemu_savevm_state_warmup(s->mon, s->file);
+    else
     if (qemu_savevm_state_iterate(s->mon, s->file) == 1) {
         int state;
         int old_vm_running = vm_running;
@@ -448,3 +462,37 @@ int migrate_fd_close(void *opaque)
     qemu_set_fd_handler2(s->fd, NULL, NULL, NULL, NULL);
     return s->close(s);
 }
+
+void do_migrate_end(Monitor *mon, const QDict *qdict)
+{
+    if (!vm_running)
+        return;
+    if (!is_migrate_warmup)
+        return;
+    is_migrate_warmup = 0;
+}
+
+void do_migrate_set_cachesize(Monitor *mon, const QDict *qdict)
+{
+    double d;
+    char *ptr;
+    const char *value = qdict_get_str(qdict, "value");
+
+    d = strtod(value, &ptr);
+
+    /* translated to bytes */
+    switch (*ptr) {
+    case 'G': case 'g':
+        d *= 1024;
+    case 'M': case 'm':
+        d *= 1024;
+    case 'K': case 'k':
+        d *= 1024;
+    default:
+        break;
+    }
+
+    migrate_cache_size = (uint32_t)d;
+    monitor_printf(mon, "Cache size set to %d bytes\n", (uint32_t)d);
+}
+

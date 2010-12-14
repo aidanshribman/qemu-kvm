@@ -29,5 +29,6 @@ void cpudef_init(void);
 int audio_available(void);
 int kvm_available(void);
 int xen_available(void);
+void dump_ram(void);
 
 #endif

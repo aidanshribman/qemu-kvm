@@ -77,6 +77,7 @@ void main_loop_wait(int nonblocking);
 int qemu_savevm_state_begin(Monitor *mon, QEMUFile *f, int blk_enable,
                             int shared);
 int qemu_savevm_state_iterate(Monitor *mon, QEMUFile *f);
+int qemu_savevm_state_warmup(Monitor *mon, QEMUFile *f);
 int qemu_savevm_state_complete(Monitor *mon, QEMUFile *f);
 void qemu_savevm_state_cancel(Monitor *mon, QEMUFile *f);
 int qemu_loadvm_state(QEMUFile *f);

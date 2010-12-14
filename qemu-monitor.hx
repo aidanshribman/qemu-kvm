@@ -986,24 +986,30 @@ ETEXI
 
     {
         .name       = "migrate",
-        .args_type  = "detach:-d,blk:-b,inc:-i,uri:s",
-        .params     = "[-d] [-b] [-i] uri",
-        .help       = "migrate to URI (using -d to not wait for completion)"
-		      "\n\t\t\t -b for migration without shared storage with"
-		      " full copy of disk\n\t\t\t -i for migration without "
-		      "shared storage with incremental copy of disk "
-		      "(base image shared between src and destination)",
+        .args_type  = "detach:-d,blk:-b,inc:-i,xbrle:-x,warmup:-w,uri:s",
+        .params     = "[-d] [-b] [-i] [-x] [-w] uri",
+        .help       = "migrate to URI"
+                      "\n\t -d to not wait for completion"
+                      "\n\t -b for migration without shared storage with"
+                      " full copy of disk"
+                      "\n\t -i for migration without"
+                      " shared storage with incremental copy of disk"
+                      " (base image shared between source and destination)"
+                      "\n\t -x to use XBRLE page delta compression"
+                      "\n\t -w to enter warmup phase",
         .user_print = monitor_user_noop,	
 	.mhandler.cmd_new = do_migrate,
     },
 
 
 STEXI
-@item migrate [-d] [-b] [-i] @var{uri}
+@item migrate [-d] [-b] [-i] [-x] [-w] @var{uri}
 @findex migrate
 Migrate to @var{uri} (using -d to not wait for completion).
 	-b for migration with full copy of disk
 	-i for migration with incremental copy of disk (base image is shared)
+        -x to use XBRLE page delta compression
+        -w to enter warmup phase
 ETEXI
 SQMP
 migrate
@@ -1016,6 +1022,8 @@ Arguments:
 - "blk": block migration, full disk copy (json-bool, optional)
 - "inc": incremental disk copy (json-bool, optional)
 - "uri": Destination URI (json-string)
+- "xbrle": to use XBRLE page delta compression
+- "warmup":to enter warmup phasen
 
 Example:
 
@@ -1057,6 +1065,64 @@ Arguments: None.
 Example:
 
 -> { "execute": "migrate_cancel" }
+<- { "return": {} }
+
+EQMP
+
+    {
+        .name       = "migrate_end",
+        .args_type  = "",
+        .params     = "",
+        .help       = "Complete warmup and move to full live migration",
+        .mhandler.cmd = do_migrate_end,
+    },
+
+STEXI
+@item migrate_end
+Complete warmup and move to full live migration.
+ETEXI
+
+SQMP
+migrate_end
+-----------
+
+End the current migration warmup.
+
+Arguments: None.
+
+Example:
+
+-> { "execute": "migrate_end" }
+<- { "return": {} }
+
+EQMP
+
+    {
+        .name       = "migrate_set_cachesize",
+        .args_type  = "value:s",
+        .params     = "value",
+        .help       = "set cache size (in MB) for xbrle migrations",
+        .mhandler.cmd = do_migrate_set_cachesize,
+    },
+
+STEXI
+@item migrate_set_cachesize @var{value}
+Set cache size (in MB) for xbrle migrations.
+ETEXI
+
+SQMP
+migrate_set_cachesize
+---------------------
+
+Set cache size to be used by XBRLE migration
+
+Arguments:
+
+- "value": cache size in bytes (json-number)
+
+Example:
+
+-> { "execute": "migrate_set_cachesize", "arguments": { "value": 500M } }
 <- { "return": {} }
 
 EQMP

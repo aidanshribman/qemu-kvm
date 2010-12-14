@@ -50,9 +50,13 @@ struct FdMigrationState
     void *opaque;
 };
 
-void process_incoming_migration(QEMUFile *f);
+extern int is_migrate_xbrle;
+
+extern uint32_t migrate_cache_size;
 
 int qemu_start_incoming_migration(const char *uri);
+
+void process_incoming_migration(QEMUFile *f);
 
 int do_migrate(Monitor *mon, const QDict *qdict, QObject **ret_data);
 
@@ -133,5 +137,9 @@ static inline FdMigrationState *migrate_to_fms(MigrationState *mig_state)
 {
     return container_of(mig_state, FdMigrationState, mig_state);
 }
+
+void do_migrate_end(Monitor *mon, const QDict *qdict);
+
+void do_migrate_set_cachesize(Monitor *mon, const QDict *qdict);
 
 #endif

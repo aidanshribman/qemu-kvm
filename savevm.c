@@ -1473,6 +1473,17 @@ int qemu_savevm_state_begin(Monitor *mon, QEMUFile *f, int blk_enable,
     return 0;
 }
 
+int qemu_savevm_state_warmup(Monitor *mon, QEMUFile *f) {
+    int ret = 1;
+
+    ret = qemu_savevm_state_iterate(mon, f);
+
+    if (ret == -EIO)
+        return ret;
+
+    return 0;
+}
+
 int qemu_savevm_state_iterate(Monitor *mon, QEMUFile *f)
 {
     SaveStateEntry *se;
